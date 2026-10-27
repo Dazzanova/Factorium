@@ -16,7 +16,8 @@ add_library(factorium_core STATIC
   src/primality.c
   src/fermat.c
   src/pollard_rho.c
-  # src/pollard_p_minus_one.c
+  src/pollard_p_minus_one.c
+  # src/factorization.c
   # src/factorization.c
 )
 target_include_directories(factorium_core PUBLIC include)
@@ -40,7 +41,8 @@ set(FACTORIUM_TESTS
   test_primality
   test_fermat
   test_pollard_rho
-  # test_pollard_p_minus_one
+  test_pollard_p_minus_one
+  # test_factorization
   # test_factorization
   # test_cli
 )

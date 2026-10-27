@@ -32,9 +32,10 @@ uint64_t fct_mod_pow(uint64_t base, uint64_t exp, uint64_t m);
 
 /* fct_mod_pow that also reports the number of modular multiplications
  * performed (bit-scan square-and-multiply: for exp > 0 the count is
- * (bit_length(exp) - 1) + (popcount(exp) - 1); for exp == 0 it is 0). */
-void fct_mod_pow_counted(uint64_t base, uint64_t exp, uint64_t m,
-                         uint64_t *modmul_ops_out);
+ * (bit_length(exp) - 1) + (popcount(exp) - 1); for exp == 0 it is 0).
+ * modmul_ops_out may be NULL. */
+uint64_t fct_mod_pow_counted(uint64_t base, uint64_t exp, uint64_t m,
+                             uint64_t *modmul_ops_out);
 
 /* floor(sqrt(n)) for the full uint64_t range. Pure integer Newton; no libm. */
 uint64_t fct_isqrt(uint64_t n);

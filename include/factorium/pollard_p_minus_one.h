@@ -30,7 +30,7 @@
 #define FCT_PM1_DEFAULT_SMOOTHNESS_BOUND 100000ULL
 #define FCT_PM1_DEFAULT_MAX_BASES 5
 #define FCT_PM1_DEFAULT_START_BASE 2
-#define FCT_PM1_DEFAULT_MAX_MODMUL_OPS (1ULL << 20)
+#define FCT_PM1_DEFAULT_MAX_MODMUL_OPS (1ULL << 24)
 /* Stage 1 needs one byte per candidate up to B. */
 #define FCT_PM1_MAX_SMOOTHNESS_BOUND 1000000000ULL
 
@@ -40,7 +40,7 @@ typedef struct {
     uint64_t max_bases;        /* how many consecutive bases to try;
                                 * 0 => default 5                        */
     uint64_t max_modmul_ops;   /* hard work cap across all bases;
-                                * 0 => default 2^20                     */
+                                * 0 => default 2^24                     */
 } fct_pminus1_config;
 
 fct_pminus1_config fct_pminus1_config_default(void);

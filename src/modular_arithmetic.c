@@ -99,10 +99,10 @@ uint64_t fct_mod_pow(uint64_t base, uint64_t exp, uint64_t m)
     return mod_pow_core(base, exp, m, NULL);
 }
 
-void fct_mod_pow_counted(uint64_t base, uint64_t exp, uint64_t m,
-                         uint64_t *modmul_ops_out)
+uint64_t fct_mod_pow_counted(uint64_t base, uint64_t exp, uint64_t m,
+                             uint64_t *modmul_ops_out)
 {
-    (void)mod_pow_core(base, exp, m, modmul_ops_out);
+    return mod_pow_core(base, exp, m, modmul_ops_out);
 }
 
 /* floor(sqrt(n)), pure integer Newton.
