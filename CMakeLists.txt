@@ -15,7 +15,7 @@ add_library(factorium_core STATIC
   src/modular_arithmetic.c
   src/primality.c
   src/fermat.c
-  # src/pollard_rho.c
+  src/pollard_rho.c
   # src/pollard_p_minus_one.c
   # src/factorization.c
 )
@@ -39,7 +39,7 @@ set(FACTORIUM_TESTS
   test_modular_arithmetic
   test_primality
   test_fermat
-  # test_pollard_rho
+  test_pollard_rho
   # test_pollard_p_minus_one
   # test_factorization
   # test_cli

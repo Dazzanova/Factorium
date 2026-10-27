@@ -7,7 +7,10 @@
  * for balanced semiprimes.
  *
  * Determinism: attempt i (0-based) uses x0 = (seed + i) % (n - 1) + 1 and
- * c = i, so a fixed seed plus a fixed config reproduce bit-identical runs.
+ * c = i % n, so a fixed seed plus a fixed config reproduce bit-identical
+ * runs. On success `seed` reports the effective initial iterate x0 and `c`
+ * its polynomial constant, so the winning run can be replayed directly as
+ * x = y = seed, f(t) = (t*t + c) mod n.
  *
  * Handling of gcd results: d == 1 means "no factor yet" (keep looping);
  * d == n means the cycle collapsed (x == y mod n) — that attempt is
