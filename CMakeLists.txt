@@ -1,6 +1,7 @@
 # Factorium — Phase 1: core engine and correctness.
 cmake_minimum_required(VERSION 3.16)
 project(factorium C)
+include(GNUInstallDirs)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -21,17 +22,23 @@ add_library(factorium_core STATIC
 )
 target_include_directories(factorium_core PUBLIC include)
 
-# add_executable(factorium src/main.c)
-# target_link_libraries(factorium PRIVATE factorium_core)
+add_executable(factorium src/main.c)
+target_link_libraries(factorium PRIVATE factorium_core)
 
 # Strict warnings on everything we build.
 set(FACTORIUM_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow
                             -Wstrict-prototypes -Wmissing-prototypes)
-foreach(t factorium_core)
+foreach(t factorium_core factorium)
   target_compile_options(${t} PRIVATE ${FACTORIUM_WARNING_FLAGS})
 endforeach()
 
 option(FACTORIUM_SANITIZERS "Build tests with ASan+UBSan (development)" OFF)
+if(FACTORIUM_SANITIZERS)
+  foreach(t factorium_core factorium)
+    target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${t} PRIVATE -fsanitize=address,undefined)
+  endforeach()
+endif()
 
 enable_testing()
 
@@ -42,9 +49,7 @@ set(FACTORIUM_TESTS
   test_pollard_rho
   test_pollard_p_minus_one
   test_factorization
-  # test_cli
-  # test_factorization
-  # test_cli
+  test_cli
 )
 
 foreach(name IN LISTS FACTORIUM_TESTS)
@@ -64,9 +69,9 @@ foreach(name IN LISTS FACTORIUM_TESTS)
 endforeach()
 
 # Optional: validate JSON output with Python 3 (stdlib only) when available.
-# find_program(PYTHON3 NAMES python3)
-# if(PYTHON3)
-#   add_test(NAME cli_json
-#            COMMAND ${PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_cli_json.py
-#                    $<TARGET_FILE:factorium>)
-# endif()
+find_program(PYTHON3 NAMES python3)
+if(PYTHON3)
+  add_test(NAME cli_json
+           COMMAND ${PYTHON3} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_cli_json.py
+                   $<TARGET_FILE:factorium>)
+endif()

@@ -48,7 +48,7 @@ static fct_u128 isqrt128(fct_u128 n)
 static fct_factor_result fermat_native(uint64_t n, uint64_t budget,
                                        uint64_t a0)
 {
-    fct_factor_result res;
+    fct_factor_result res = {0};
     res.status = FCT_NO_FACTOR;
     res.reason = FCT_TERM_BUDGET_EXHAUSTED;
     res.iterations = 0;
@@ -90,7 +90,7 @@ static fct_factor_result fermat_native(uint64_t n, uint64_t budget,
 
 fct_factor_result fct_fermat(uint64_t n, const fct_fermat_config *cfg)
 {
-    fct_factor_result res;
+    fct_factor_result res = {0};
     res.status = FCT_NO_FACTOR;
     res.reason = FCT_TERM_BUDGET_EXHAUSTED;
     res.iterations = 0;
