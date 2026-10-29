@@ -5,3 +5,8 @@ build-*/
 *.a
 bin/
 docs/
+.venv/
+smoke_*.csv
+tmp_*.csv
+
+

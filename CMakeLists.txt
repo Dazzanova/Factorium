@@ -1,4 +1,4 @@
-# Factorium — Phase 1: core engine and correctness.
+# Factorium — Phase 1 & 2: core engine, correctness, and benchmarking.
 cmake_minimum_required(VERSION 3.16)
 project(factorium C)
 include(GNUInstallDirs)
@@ -19,22 +19,26 @@ add_library(factorium_core STATIC
   src/pollard_rho.c
   src/pollard_p_minus_one.c
   src/factorization.c
+  src/benchmark.c
 )
 target_include_directories(factorium_core PUBLIC include)
 
 add_executable(factorium src/main.c)
 target_link_libraries(factorium PRIVATE factorium_core)
 
+add_executable(factorium_bench src/bench_main.c)
+target_link_libraries(factorium_bench PRIVATE factorium_core)
+
 # Strict warnings on everything we build.
 set(FACTORIUM_WARNING_FLAGS -Wall -Wextra -Wpedantic -Wshadow
                             -Wstrict-prototypes -Wmissing-prototypes)
-foreach(t factorium_core factorium)
+foreach(t factorium_core factorium factorium_bench)
   target_compile_options(${t} PRIVATE ${FACTORIUM_WARNING_FLAGS})
 endforeach()
 
 option(FACTORIUM_SANITIZERS "Build tests with ASan+UBSan (development)" OFF)
 if(FACTORIUM_SANITIZERS)
-  foreach(t factorium_core factorium)
+  foreach(t factorium_core factorium factorium_bench)
     target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
     target_link_options(${t} PRIVATE -fsanitize=address,undefined)
   endforeach()
@@ -50,6 +54,7 @@ set(FACTORIUM_TESTS
   test_pollard_p_minus_one
   test_factorization
   test_cli
+  test_benchmark
 )
 
 foreach(name IN LISTS FACTORIUM_TESTS)
@@ -67,6 +72,10 @@ foreach(name IN LISTS FACTORIUM_TESTS)
     add_test(NAME ${name} COMMAND ${name})
   endif()
 endforeach()
+
+# Smoke benchmark automated validation
+add_test(NAME bench_smoke
+         COMMAND factorium_bench --smoke --raw-out smoke_raw.csv --summary-out smoke_summary.csv --quiet)
 
 # Optional: validate JSON output with Python 3 (stdlib only) when available.
 find_program(PYTHON3 NAMES python3)
