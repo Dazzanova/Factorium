@@ -21,7 +21,7 @@ Factorium/
 ├── .gitignore                          # Clean build, temporary, and virtualenv exclusions
 ├── include/
 │   └── factorium/
-│       ├── common.h                    # Result structures, status codes, and termination reasons
+│       ├── common.h                    # The ResultCode shared by every algorithm
 │       ├── modular_arithmetic.h        # Overflow-safe modular operations and square roots
 │       ├── primality.h                 # Deterministic 64-bit Miller-Rabin test
 │       ├── fermat.h                    # Fermat difference-of-squares interface
@@ -30,14 +30,15 @@ Factorium/
 │       ├── factorization.h             # Recursive complete-factorization engine
 │       └── benchmark.h                 # Benchmark suite, dataset definitions, and CSV export
 ├── src/
-│   ├── common.c                        # String conversions for statuses and reasons
+│   ├── common.c                        # Status/reason text and exit codes for ResultCode
 │   ├── modular_arithmetic.c            # GCD, modmul, modpow, isqrt, checked multiplication
 │   ├── primality.c                     # Miller-Rabin implementation (12 proven witnesses)
 │   ├── fermat.c                        # Fermat's algorithm implementation
 │   ├── pollard_rho.c                   # Pollard Rho with Floyd cycle detection
 │   ├── pollard_p_minus_one.c           # Pollard p-1 stage 1 with Eratosthenes sieve
 │   ├── factorization.c                 # Recursive composition pipeline and verification
-│   ├── benchmark.c                     # Controlled datasets, trial runner, stats, and CSV writer
+│   ├── benchmark.c                     # Trial runner, statistics aggregation, and CSV writer
+│   ├── bench_dataset.c                 # Benchmark dataset tables and accessors
 │   ├── bench_main.c                    # Dedicated benchmark runner binary (factorium_bench)
 │   └── main.c                          # Core CLI binary: factor, compare, verify, JSON mode
 ├── tests/
@@ -90,12 +91,12 @@ Factorium/
 - Rather than probabilistic testing, Factorium uses deterministic Miller-Rabin with the 12 prime witnesses:
   $$\{2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37\}$$
 - **Correctness**: Proven (Pomerance, Selfridge, Wagstaff, Sorenson, Webster) to be deterministic for all $n < 318{,}665{,}857{,}834{,}031{,}151{,}167{,}461 > 2^{64}$. Thus, primality testing is exact across the complete 64-bit integer domain.
-- **Separation of Concerns**: A failed search in Fermat, Rho, or $p-1$ is reported as `FCT_NO_FACTOR`, never as proof that $n$ is prime.
+- **Separation of Concerns**: A failed search in Fermat, Rho, or $p-1$ is reported as `RESULT_NO_FACTOR`, never as proof that $n$ is prime.
 
 ### 5. Overflow Safety and 64-bit Arithmetic
 - **Compiler Extension**: On platforms where `__SIZEOF_INT128__` is supported (GCC/Clang on x86-64, aarch64), modular multiplication $(a \cdot b) \pmod m$ and Fermat's quadratic accumulator use `unsigned __int128` to prevent overflow when $a \cdot b \ge 2^{64}$.
 - **Portable Fallback**: If compiled on an architecture without `__int128`, a portable double-and-add (Russian peasant) modular multiplication loop is used, and Fermat checks bounds before overflow.
-- **Factor Reconstruction**: Factors are multiplied back using `fct_mul_checked` (`uint64_t` checked multiplication) to rigorously verify $n = \prod p_i^{k_i}$.
+- **Factor Reconstruction**: Factors are multiplied back using `mul_checked` (`uint64_t` checked multiplication) to rigorously verify $n = \prod p_i^{k_i}$. The factorization engine uses fixed-size arrays (`MAX_FACTORS`), so it performs no heap allocation.
 
 ---
 
