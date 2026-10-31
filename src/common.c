@@ -1,34 +1,54 @@
 /*
- * factorium/src/common.c — human-readable names for result codes.
+ * factorium/src/common.c — text and exit code for each result code.
  */
 #include "factorium/common.h"
 
-const char *fct_status_str(fct_status s)
+#include <stddef.h>
+
+typedef struct {
+    ResultCode code;
+    const char *status;
+    const char *reason;
+    int exit;
+} CodeInfo;
+
+static const CodeInfo CODES[] = {
+    { RESULT_FOUND,        "ok",                    "found",             0 },
+    { RESULT_COMPLETE,     "ok",                    "none",              0 },
+    { RESULT_NO_FACTOR,    "no_factor",             "budget_exhausted",  1 },
+    { RESULT_NO_BASE,      "no_factor",             "bases_exhausted",   1 },
+    { RESULT_INVALID,      "invalid_input",         "invalid_input",     2 },
+    { RESULT_INCOMPLETE,   "incomplete",            "budget_exhausted",  3 },
+    { RESULT_DEPTH_LIMIT,  "incomplete",            "recursion_limit",   3 },
+    { RESULT_WORK_LIMIT,   "work_limit",            "work_limit",        4 },
+    { RESULT_FACTOR_LIMIT, "work_limit",            "factor_limit",      4 },
+    { RESULT_MEMORY,       "memory",                "none",              5 },
+    { RESULT_INTERNAL,     "internal",              "none",              5 },
+    { RESULT_BAD_PRODUCT,  "reconstruction_failed", "none",              5 },
+};
+
+/* Returns the table row for a code; unknown codes behave as INTERNAL. */
+static const CodeInfo *find(ResultCode code)
 {
-    switch (s) {
-    case FCT_OK: return "ok";
-    case FCT_NO_FACTOR: return "no_factor";
-    case FCT_INVALID_INPUT: return "invalid_input";
-    case FCT_WORK_LIMIT: return "work_limit";
-    case FCT_INCOMPLETE: return "incomplete";
-    case FCT_RECONSTRUCTION_FAILED: return "reconstruction_failed";
-    case FCT_MEMORY: return "memory";
-    case FCT_INTERNAL: return "internal";
+    size_t i;
+    for (i = 0; i < sizeof(CODES) / sizeof(CODES[0]); i++) {
+        if (CODES[i].code == code)
+            return &CODES[i];
     }
-    return "unknown";
+    return &CODES[10]; /* RESULT_INTERNAL */
 }
 
-const char *fct_termination_str(fct_termination t)
+const char *status_string(ResultCode code)
 {
-    switch (t) {
-    case FCT_TERM_NONE: return "none";
-    case FCT_TERM_FOUND: return "found";
-    case FCT_TERM_BUDGET_EXHAUSTED: return "budget_exhausted";
-    case FCT_TERM_BASES_EXHAUSTED: return "bases_exhausted";
-    case FCT_TERM_INVALID_INPUT: return "invalid_input";
-    case FCT_TERM_WORK_LIMIT: return "work_limit";
-    case FCT_TERM_RECURSION_LIMIT: return "recursion_limit";
-    case FCT_TERM_FACTOR_LIMIT: return "factor_limit";
-    }
-    return "unknown";
+    return find(code)->status;
+}
+
+const char *reason_string(ResultCode code)
+{
+    return find(code)->reason;
+}
+
+int exit_code(ResultCode code)
+{
+    return find(code)->exit;
 }

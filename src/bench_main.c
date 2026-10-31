@@ -74,7 +74,7 @@ int main(int argc, char **argv)
         }
     }
 
-    fct_bench_suite_options opts = fct_bench_suite_options_default(smoke);
+    BenchOptions opts = default_suite_options(smoke);
     if (rho_trials > 0) opts.rho_trials = rho_trials;
     if (max_iters > 0) opts.max_iterations = max_iters;
     if (smoothness > 0) opts.smoothness_bound = smoothness;
@@ -85,10 +85,10 @@ int main(int argc, char **argv)
                opts.rho_trials, opts.max_iterations, opts.smoothness_bound);
     }
 
-    fct_bench_suite_result res = fct_bench_run_suite(&opts);
+    BenchSuite res = run_suite(&opts);
     if (!res.records || res.record_count == 0) {
         fprintf(stderr, "error: benchmark execution failed or yielded zero records\n");
-        fct_bench_suite_result_free(&res);
+        free_suite(&res);
         return 1;
     }
 
@@ -96,20 +96,20 @@ int main(int argc, char **argv)
     FILE *raw_file = fopen(raw_path, "w");
     if (!raw_file) {
         fprintf(stderr, "error: cannot open raw output file '%s' for writing\n", raw_path);
-        fct_bench_suite_result_free(&res);
+        free_suite(&res);
         return 1;
     }
-    fct_bench_export_raw_csv(res.records, res.record_count, raw_file);
+    export_raw_csv(res.records, res.record_count, raw_file);
     fclose(raw_file);
 
     /* Export Summary CSV */
     FILE *sum_file = fopen(summary_path, "w");
     if (!sum_file) {
         fprintf(stderr, "error: cannot open summary output file '%s' for writing\n", summary_path);
-        fct_bench_suite_result_free(&res);
+        free_suite(&res);
         return 1;
     }
-    fct_bench_export_summary_csv(res.summaries, res.summary_count, sum_file);
+    export_summary_csv(res.summaries, res.summary_count, sum_file);
     fclose(sum_file);
 
     if (!quiet) {
@@ -121,15 +121,15 @@ int main(int argc, char **argv)
         printf("%-20s %-8s %-10s %-12s %-12s\n", "Dataset", "Algo", "Success", "Median (us)", "Median Iters");
         printf("----------------------------------------------------------------------\n");
         for (size_t i = 0; i < res.summary_count; i++) {
-            const fct_bench_summary *s = &res.summaries[i];
+            const BenchSummary *s = &res.summaries[i];
             printf("%-20s %-8s %3" U64_FMT "/%-4" U64_FMT " %10.2f us %12" U64_FMT "\n",
-                   s->dataset_id, fct_bench_algo_name(s->algo),
+                   s->dataset_id, algo_name(s->algo),
                    s->num_success, s->num_trials,
                    (double)s->median_runtime_ns / 1000.0,
                    s->median_iterations);
         }
     }
 
-    fct_bench_suite_result_free(&res);
+    free_suite(&res);
     return 0;
 }

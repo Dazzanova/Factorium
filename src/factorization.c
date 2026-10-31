@@ -1,17 +1,12 @@
 /*
- * factorium/src/factorization.c — recursive splitting of composites.
- *
- * Order per node: Miller-Rabin (prime => emit), depth cap, trial division
- * by the primes <= 97, Fermat, Pollard Rho, Pollard p-1. The first
- * nontrivial factor splits the node; the two children recurse. Every
- * outcome — complete, incomplete, limit — is recorded explicitly.
+ * factorium/src/factorization.c — recursive complete factorization.
  */
 #include "factorium/factorization.h"
-#include "factorium/modular_arithmetic.h"
-#include "factorium/primality.h"
 #include "factorium/fermat.h"
-#include "factorium/pollard_rho.h"
+#include "factorium/modular_arithmetic.h"
 #include "factorium/pollard_p_minus_one.h"
+#include "factorium/pollard_rho.h"
+#include "factorium/primality.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,148 +17,125 @@ static const uint64_t SMALL_PRIMES[] = {
 };
 
 typedef struct {
-    fct_factorization_config cfg;
-    uint64_t *factors;
-    size_t factor_count;
-    size_t factor_cap;
-    uint64_t *unresolved;
-    size_t unresolved_count;
-    size_t unresolved_cap;
-    uint64_t iterations;
-    uint64_t gcd_calls;
-    uint64_t modmul_ops;
-    fct_termination reason;
-    bool factor_overflow;
-    bool mem_fail;
-    bool internal_error;
-} split_ctx;
+    FactorizeOptions opt;
+    Factorization f;
+    ResultCode stop;      /* why an incomplete result stopped     */
+    bool factor_overflow; /* the factor array ran out of room    */
+    bool internal_error;  /* an algorithm returned something odd */
+} Work;
 
-fct_factorization_config fct_factorization_config_default(void)
+FactorizeOptions default_options(void)
 {
-    fct_factorization_config c;
-    c.max_iterations = FCT_FACTORIZATION_DEFAULT_MAX_ITERATIONS;
-    c.max_retries = FCT_FACTORIZATION_DEFAULT_MAX_RETRIES;
-    c.smoothness_bound = FCT_FACTORIZATION_DEFAULT_SMOOTHNESS_BOUND;
-    c.max_bases = FCT_FACTORIZATION_DEFAULT_MAX_BASES;
-    c.seed = FCT_FACTORIZATION_DEFAULT_SEED;
-    c.max_depth = FCT_FACTORIZATION_DEFAULT_MAX_DEPTH;
-    c.max_factors = FCT_FACTORIZATION_DEFAULT_MAX_FACTORS;
-    return c;
+    FactorizeOptions o;
+    o.max_iterations = FACTORIZE_DEFAULT_ITERATIONS;
+    o.max_retries = FACTORIZE_DEFAULT_RETRIES;
+    o.seed = FACTORIZE_DEFAULT_SEED;
+    o.smoothness_bound = FACTORIZE_DEFAULT_BOUND;
+    o.max_bases = FACTORIZE_DEFAULT_BASES;
+    o.max_depth = FACTORIZE_DEFAULT_DEPTH;
+    o.max_factors = FACTORIZE_DEFAULT_MAX_FACTORS;
+    return o;
 }
 
-static bool append_factor(split_ctx *c, uint64_t p)
+static bool add_factor(Work *w, uint64_t p)
 {
-    if (c->factor_count >= c->factor_cap) {
-        c->factor_overflow = true;
-        c->reason = FCT_TERM_FACTOR_LIMIT;
+    if (w->f.factor_count >= (int)w->opt.max_factors ||
+        w->f.factor_count >= MAX_FACTORS) {
+        w->factor_overflow = true;
+        w->stop = RESULT_FACTOR_LIMIT;
         return false;
     }
-    c->factors[c->factor_count++] = p;
+    w->f.factors[w->f.factor_count++] = p;
     return true;
 }
 
-static bool append_unresolved(split_ctx *c, uint64_t v)
+static bool add_unresolved(Work *w, uint64_t value)
 {
-    if (c->unresolved_count == c->unresolved_cap) {
-        size_t ncap = c->unresolved_cap ? c->unresolved_cap * 2 : 8;
-        uint64_t *grown = (uint64_t *)realloc(c->unresolved,
-                                              ncap * sizeof(uint64_t));
-        if (grown == NULL) {
-            c->mem_fail = true;
-            return false;
-        }
-        c->unresolved = grown;
-        c->unresolved_cap = ncap;
+    if (w->f.unresolved_count >= MAX_FACTORS) {
+        w->factor_overflow = true;
+        w->stop = RESULT_FACTOR_LIMIT;
+        return false;
     }
-    c->unresolved[c->unresolved_count++] = v;
+    w->f.unresolved[w->f.unresolved_count++] = value;
     return true;
 }
 
-static void accumulate(split_ctx *c, const fct_factor_result *r)
+static uint64_t trial_division(uint64_t n)
 {
-    c->iterations += r->iterations;
-    c->gcd_calls += r->gcd_calls;
-    c->modmul_ops += r->modmul_ops;
+    size_t i;
+    for (i = 0; i < sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]); i++) {
+        if (n % SMALL_PRIMES[i] == 0)
+            return SMALL_PRIMES[i];
+    }
+    return 0;
 }
 
-static void split(split_ctx *c, uint64_t v, uint64_t depth)
+static void split(Work *w, uint64_t n, int depth)
 {
-    if (c->factor_overflow || c->mem_fail || c->internal_error)
+    uint64_t d;
+    FactorResult r;
+
+    if (w->factor_overflow || w->internal_error)
         return;
 
-    if (fct_is_prime(v)) {
-        append_factor(c, v);
-        return;
-    }
-
-    if (depth > c->cfg.max_depth) {
-        append_unresolved(c, v);
-        c->reason = FCT_TERM_RECURSION_LIMIT;
+    if (is_prime(n)) {
+        add_factor(w, n);
         return;
     }
 
-    /* 1. Trial division by the small primes. */
-    uint64_t d = 0;
-    for (size_t i = 0; i < sizeof(SMALL_PRIMES) / sizeof(SMALL_PRIMES[0]); i++) {
-        if (v % SMALL_PRIMES[i] == 0) {
-            d = SMALL_PRIMES[i];
-            break;
-        }
+    if (depth > (int)w->opt.max_depth) {
+        add_unresolved(w, n);
+        w->stop = RESULT_DEPTH_LIMIT;
+        return;
     }
 
-    /* 2. Fermat — favorable when the two sides are close. */
-    if (d == 0) {
-        fct_fermat_config fc;
-        fc.max_iterations = c->cfg.max_iterations;
-        fct_factor_result r = fct_fermat(v, &fc);
-        accumulate(c, &r);
-        if (r.status == FCT_OK)
-            d = r.factor;
-    }
+    d = trial_division(n);
 
-    /* 3. Pollard Rho — the general workhorse. */
     if (d == 0) {
-        fct_rho_config rc;
-        rc.max_iterations_per_attempt = c->cfg.max_iterations;
-        rc.max_retries = c->cfg.max_retries;
-        rc.seed = c->cfg.seed;
-        fct_factor_result r = fct_pollard_rho(v, &rc);
-        accumulate(c, &r);
-        if (r.status == FCT_OK)
-            d = r.factor;
-    }
-
-    /* 4. Pollard p-1 — favorable when p-1 / q-1 are smooth. */
-    if (d == 0) {
-        fct_pminus1_config pc;
-        pc.smoothness_bound = c->cfg.smoothness_bound;
-        pc.start_base = 0;   /* 0 => default 2 */
-        pc.max_bases = c->cfg.max_bases;
-        pc.max_modmul_ops = 0; /* 0 => default cap */
-        fct_factor_result r = fct_pollard_p_minus_one(v, &pc);
-        accumulate(c, &r);
-        if (r.status == FCT_OK)
+        r = fermat(n, w->opt.max_iterations);
+        w->f.iterations += r.iterations;
+        w->f.gcd_calls += r.gcd_calls;
+        w->f.modmul_ops += r.modmul_ops;
+        if (r.code == RESULT_FOUND)
             d = r.factor;
     }
 
     if (d == 0) {
-        append_unresolved(c, v);
-        c->reason = FCT_TERM_BUDGET_EXHAUSTED;
+        r = rho(n, w->opt.max_iterations, w->opt.max_retries, w->opt.seed);
+        w->f.iterations += r.iterations;
+        w->f.gcd_calls += r.gcd_calls;
+        w->f.modmul_ops += r.modmul_ops;
+        if (r.code == RESULT_FOUND)
+            d = r.factor;
+    }
+
+    if (d == 0) {
+        r = pminus1(n, w->opt.smoothness_bound, PM1_DEFAULT_START_BASE,
+                    w->opt.max_bases, PM1_DEFAULT_MAX_OPS);
+        w->f.iterations += r.iterations;
+        w->f.gcd_calls += r.gcd_calls;
+        w->f.modmul_ops += r.modmul_ops;
+        if (r.code == RESULT_FOUND)
+            d = r.factor;
+    }
+
+    if (d == 0) {
+        add_unresolved(w, n);
+        w->stop = RESULT_INCOMPLETE;
         return;
     }
 
-    /* Defensive: an algorithm must never hand back a non-split. */
-    if (d <= 1 || d >= v || v % d != 0) {
-        c->internal_error = true;
-        c->reason = FCT_TERM_NONE;
+    /* An algorithm must never hand back a non-split. */
+    if (d <= 1 || d >= n || n % d != 0) {
+        w->internal_error = true;
         return;
     }
 
-    split(c, d, depth + 1);
-    split(c, v / d, depth + 1);
+    split(w, d, depth + 1);
+    split(w, n / d, depth + 1);
 }
 
-static int cmp_u64(const void *a, const void *b)
+static int compare_u64(const void *a, const void *b)
 {
     uint64_t x = *(const uint64_t *)a;
     uint64_t y = *(const uint64_t *)b;
@@ -174,90 +146,60 @@ static int cmp_u64(const void *a, const void *b)
     return 0;
 }
 
-fct_factorization fct_factorize(uint64_t n, const fct_factorization_config *cfg_in)
+Factorization factorize(uint64_t n, const FactorizeOptions *opt_in)
 {
-    fct_factorization res;
-    memset(&res, 0, sizeof(res));
-    res.status = FCT_INTERNAL;
-    res.n = n;
-    res.reason = FCT_TERM_NONE;
+    Work w;
+    uint64_t product = 1;
+    bool product_ok = true;
+    int i;
+
+    memset(&w, 0, sizeof(w));
+    w.f.n = n;
+    w.stop = RESULT_INCOMPLETE;
 
     if (n < 2) {
-        res.status = FCT_INVALID_INPUT;
-        res.reason = FCT_TERM_INVALID_INPUT;
-        return res;
+        w.f.code = RESULT_INVALID;
+        return w.f;
     }
 
-    split_ctx c;
-    memset(&c, 0, sizeof(c));
-    c.cfg = fct_factorization_config_default();
-    if (cfg_in) {
-        if (cfg_in->max_iterations != 0) c.cfg.max_iterations = cfg_in->max_iterations;
-        if (cfg_in->max_retries != 0) c.cfg.max_retries = cfg_in->max_retries;
-        if (cfg_in->smoothness_bound != 0) c.cfg.smoothness_bound = cfg_in->smoothness_bound;
-        if (cfg_in->max_bases != 0) c.cfg.max_bases = cfg_in->max_bases;
-        if (cfg_in->seed != 0) c.cfg.seed = cfg_in->seed;
-        if (cfg_in->max_depth != 0) c.cfg.max_depth = cfg_in->max_depth;
-        if (cfg_in->max_factors != 0) c.cfg.max_factors = cfg_in->max_factors;
+    w.opt = default_options();
+    if (opt_in != NULL) {
+        if (opt_in->max_iterations != 0) w.opt.max_iterations = opt_in->max_iterations;
+        if (opt_in->max_retries != 0) w.opt.max_retries = opt_in->max_retries;
+        if (opt_in->seed != 0) w.opt.seed = opt_in->seed;
+        if (opt_in->smoothness_bound != 0) w.opt.smoothness_bound = opt_in->smoothness_bound;
+        if (opt_in->max_bases != 0) w.opt.max_bases = opt_in->max_bases;
+        if (opt_in->max_depth != 0) w.opt.max_depth = opt_in->max_depth;
+        if (opt_in->max_factors != 0) w.opt.max_factors = opt_in->max_factors;
     }
-    c.factor_cap = (size_t)c.cfg.max_factors;
-    c.reason = FCT_TERM_NONE;
-    c.factors = (uint64_t *)malloc(c.factor_cap * sizeof(uint64_t));
-    if (c.factors == NULL) {
-        res.status = FCT_MEMORY;
-        return res;
-    }
+    if (w.opt.max_factors > MAX_FACTORS)
+        w.opt.max_factors = MAX_FACTORS;
 
-    split(&c, n, 0);
+    split(&w, n, 0);
 
-    if (c.factor_count > 1)
-        qsort(c.factors, c.factor_count, sizeof(uint64_t), cmp_u64);
+    if (w.f.factor_count > 1)
+        qsort(w.f.factors, (size_t)w.f.factor_count, sizeof(uint64_t), compare_u64);
 
-    uint64_t prod = 1;
-    bool prod_ok = true;
-    for (size_t i = 0; i < c.factor_count; i++) {
-        if (!fct_mul_checked(prod, c.factors[i], &prod)) {
-            prod_ok = false;
+    for (i = 0; i < w.f.factor_count; i++) {
+        if (!mul_checked(product, w.f.factors[i], &product)) {
+            product_ok = false;
             break;
         }
     }
 
-    res.factors = c.factors;
-    res.factor_count = c.factor_count;
-    res.unresolved_cofactors = c.unresolved;
-    res.unresolved_count = c.unresolved_count;
-    res.product = prod;
-    res.product_verified = prod_ok && (prod == n);
-    res.iterations = c.iterations;
-    res.gcd_calls = c.gcd_calls;
-    res.modmul_ops = c.modmul_ops;
-    res.reason = c.reason;
+    w.f.product = product;
+    w.f.product_verified = product_ok && product == n;
 
-    if (c.mem_fail) {
-        res.status = FCT_MEMORY;
-    } else if (c.internal_error) {
-        res.status = FCT_INTERNAL;
-    } else if (c.factor_overflow) {
-        res.status = FCT_WORK_LIMIT;
-    } else if (res.unresolved_count > 0) {
-        res.status = FCT_INCOMPLETE;
-    } else if (res.product_verified) {
-        res.status = FCT_OK;
-        res.reason = FCT_TERM_NONE;
+    if (w.internal_error) {
+        w.f.code = RESULT_INTERNAL;
+    } else if (w.factor_overflow) {
+        w.f.code = RESULT_FACTOR_LIMIT;
+    } else if (w.f.unresolved_count > 0) {
+        w.f.code = w.stop;
+    } else if (w.f.product_verified) {
+        w.f.code = RESULT_COMPLETE;
     } else {
-        res.status = FCT_RECONSTRUCTION_FAILED;
+        w.f.code = RESULT_BAD_PRODUCT;
     }
-    return res;
-}
-
-void fct_factorization_free(fct_factorization *f)
-{
-    if (f == NULL)
-        return;
-    free(f->factors);
-    free(f->unresolved_cofactors);
-    f->factors = NULL;
-    f->unresolved_cofactors = NULL;
-    f->factor_count = 0;
-    f->unresolved_count = 0;
+    return w.f;
 }

@@ -1,143 +1,116 @@
 /*
- * factorium/src/fermat.c — Fermat's difference-of-squares factorization.
+ * factorium/src/fermat.c — Fermat's difference-of-squares method.
  *
- * On __int128-capable compilers (documented assumption) the running
- * b^2 is kept in unsigned __int128 so the search is correct for the full
- * 64-bit domain (already at a = 2^32 the value a^2 = 2^64 overflows
- * uint64_t). Without the extension the loop is confined to a < 2^32 and
- * stops with FCT_WORK_LIMIT.
+ * a^2 is tracked in unsigned __int128 because it can be larger than 64
+ * bits (a starts near sqrt(n), but the search may go past 2^32). On compilers
+ * without that extension the loop stays below 2^32 and reports a work limit.
  */
 #include "factorium/fermat.h"
 #include "factorium/modular_arithmetic.h"
 
-fct_fermat_config fct_fermat_config_default(void)
-{
-    fct_fermat_config c;
-    c.max_iterations = FCT_FERMAT_DEFAULT_MAX_ITERATIONS;
-    return c;
-}
-
 #if defined(__SIZEOF_INT128__)
-/* The u128 machinery is a documented compiler extension; keep -Wpedantic
- * clean around everything that mentions it. */
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpedantic"
 
-typedef unsigned __int128 fct_u128;
+typedef unsigned __int128 u128;
 
-/* floor(sqrt(n)) for u128: same integer Newton as fct_isqrt; every
- * formed sum x + n/x is < 2^128 because x <= n/2 + 1 and, while
- * x > sqrt(n), n/x < x. */
-static fct_u128 isqrt128(fct_u128 n)
+/* floor(sqrt(x)) for a 128-bit value. */
+static u128 isqrt128(u128 x)
 {
-    if (n < 2)
-        return n;
-    fct_u128 x = n / 2 + 1;
+    u128 r;
+    if (x < 2)
+        return x;
+    r = x / 2 + 1;
     for (;;) {
-        fct_u128 y = (x + n / x) / 2;
-        if (y >= x)
+        u128 next = (r + x / r) / 2;
+        if (next >= r)
             break;
-        x = y;
+        r = next;
     }
-    while (x > n / x)
-        x--;
-    return x;
+    while (r > x / r)
+        r--;
+    return r;
 }
 
-/* a0 must already be ceil(sqrt n); budget >= 1. */
-static fct_factor_result fermat_native(uint64_t n, uint64_t budget,
-                                       uint64_t a0)
+static FactorResult fermat_wide(uint64_t n, uint64_t budget, uint64_t a0)
 {
-    fct_factor_result res = {0};
-    res.status = FCT_NO_FACTOR;
-    res.reason = FCT_TERM_BUDGET_EXHAUSTED;
-    res.iterations = 0;
-    res.gcd_calls = 0;
-    res.modmul_ops = 0;
-    res.seed = 0;
-    res.c = 0;
-
+    FactorResult res = {0};
     uint64_t a = a0;
-    fct_u128 b2 = (fct_u128)a * a - n;
-    for (uint64_t tried = 0; tried < budget; tried++) {
-        fct_u128 b = isqrt128(b2);
+    u128 b2 = (u128)a * a - n;
+    uint64_t tried;
+
+    res.code = RESULT_NO_FACTOR;
+
+    for (tried = 0; tried < budget; tried++) {
+        u128 b = isqrt128(b2);
         if (b * b == b2) {
             res.iterations = tried + 1;
-            if (b < a) { /* b < a always holds for n >= 1; defensive */
+            if (b < a) {
                 uint64_t p = a - (uint64_t)b;
                 if (p > 1) {
-                    res.status = FCT_OK;
-                    res.reason = FCT_TERM_FOUND;
+                    res.code = RESULT_FOUND;
                     res.factor = p;
                     res.cofactor = n / p;
                     return res;
                 }
             }
-            /* p == 1 is the trivial representation a^2 - b^2 = 1*n,
-             * reached only for prime n; by contract Fermat reports no
-             * nontrivial factor rather than claiming primality. */
+            /* b == a means the factor is 1: n is prime, so stop. */
             break;
         }
-        b2 += (fct_u128)2 * a + 1; /* (a+1)^2 - n */
+        b2 += (u128)2 * a + 1; /* (a + 1)^2 - n */
         a++;
     }
+
     res.iterations = budget;
     return res;
 }
 
 #pragma GCC diagnostic pop
-#endif
 
-fct_factor_result fct_fermat(uint64_t n, const fct_fermat_config *cfg)
+#endif /* __SIZEOF_INT128__ */
+
+FactorResult fermat(uint64_t n, uint64_t max_iterations)
 {
-    fct_factor_result res = {0};
-    res.status = FCT_NO_FACTOR;
-    res.reason = FCT_TERM_BUDGET_EXHAUSTED;
-    res.iterations = 0;
-    res.gcd_calls = 0;
-    res.modmul_ops = 0;
-    res.seed = 0;
-    res.c = 0;
+    FactorResult res = {0};
+    uint64_t a;
+
+    res.code = RESULT_NO_FACTOR;
 
     if (n < 4) {
-        res.status = FCT_INVALID_INPUT;
-        res.reason = FCT_TERM_INVALID_INPUT;
+        res.code = RESULT_INVALID;
         return res;
     }
     if ((n & 1) == 0) {
-        res.status = FCT_OK;
-        res.reason = FCT_TERM_FOUND;
+        res.code = RESULT_FOUND;
         res.factor = 2;
         res.cofactor = n / 2;
         return res;
     }
-
-    uint64_t budget = cfg ? cfg->max_iterations
-                          : FCT_FERMAT_DEFAULT_MAX_ITERATIONS;
-    if (budget == 0)
+    if (max_iterations == 0)
         return res;
 
-    uint64_t a = fct_isqrt(n);
-    if (a * a < n) /* safe: isqrt yields a <= 2^32-1 */
-        a++;       /* a = ceil(sqrt n); hence a^2 >= n */
+    a = isqrt(n);
+    if (a * a < n) /* a <= 2^32 - 1, so a * a cannot overflow here */
+        a++;
 
 #if defined(__SIZEOF_INT128__)
-    return fermat_native(n, budget, a);
-#else /* no __int128: confined to a < 2^32 so a^2 fits in uint64_t */
-    for (uint64_t tried = 0; tried < budget; tried++) {
+
+    return fermat_wide(n, max_iterations, a);
+
+#else
+
+    for (uint64_t tried = 0; tried < max_iterations; tried++) {
+        uint64_t b;
         res.iterations = tried + 1;
         if (a >= (1ULL << 32)) {
-            res.status = FCT_WORK_LIMIT;
-            res.reason = FCT_TERM_WORK_LIMIT;
+            res.code = RESULT_WORK_LIMIT;
             return res;
         }
-        uint64_t b2 = a * a - n; /* a < 2^32 => a^2 < 2^64, and a^2 >= n */
-        uint64_t b;
-        if (fct_is_square(b2, &b) && b < a) {
+        if (is_square(a * a - n, &b) && b < a) {
             uint64_t p = a - b;
             if (p > 1) {
-                res.status = FCT_OK;
-                res.reason = FCT_TERM_FOUND;
+                res.code = RESULT_FOUND;
                 res.factor = p;
                 res.cofactor = n / p;
                 return res;
@@ -147,5 +120,6 @@ fct_factor_result fct_fermat(uint64_t n, const fct_fermat_config *cfg)
         a++;
     }
     return res;
+
 #endif
 }

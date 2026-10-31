@@ -1,73 +1,61 @@
 /*
- * factorium/factorization.h — shared complete-factorization layer.
+ * factorium/factorization.h — complete factorization of any uint64_t.
  *
- * Splits a composite recursively by trying, in order, on each unresolved
- * node:
- *   1. trial division by the primes <= 97 (handles even and tiny factors),
- *   2. Fermat (cheap when the two sides are close),
+ * The number is split recursively. At each composite node we try, in order:
+ *   1. trial division by the primes up to 97,
+ *   2. Fermat (cheap when the factors are close),
  *   3. Pollard Rho (general case),
- *   4. Pollard p-1 (when p-1 / q-1 are smooth).
- * Miller-Rabin decides whether a node is prime and may be emitted.
+ *   4. Pollard p-1 (when p - 1 is smooth).
+ * Miller-Rabin decides when a node is prime.
  *
- * Guarantees on FCT_OK (complete):
- *   - factors are prime (deterministic Miller-Rabin),
- *   - sorted ascending, multiplicities preserved,
- *   - product_verified means the product of factors was reconstructed with
- *     checked multiplication and equals n exactly.
- *
- * On FCT_INCOMPLETE: at least one composite cofactor could not be split
- * within the configured limits; it is listed in `unresolved_cofactors`,
- * it is NOT included in `factors`, and product_verified is false. An
- * incomplete result is never a claim that the cofactors are prime.
+ * When the result is RESULT_COMPLETE the factors are prime, sorted and
+ * their product was checked to equal n exactly. An incomplete result lists
+ * the cofactors that could not be split; those cofactors are not claimed
+ * to be prime.
  */
 #ifndef FACTORIUM_FACTORIZATION_H
 #define FACTORIUM_FACTORIZATION_H
 
 #include "factorium/common.h"
 
-#define FCT_FACTORIZATION_DEFAULT_MAX_ITERATIONS (1ULL << 20)
-#define FCT_FACTORIZATION_DEFAULT_MAX_RETRIES 8
-#define FCT_FACTORIZATION_DEFAULT_SMOOTHNESS_BOUND 100000ULL
-#define FCT_FACTORIZATION_DEFAULT_MAX_BASES 5
-#define FCT_FACTORIZATION_DEFAULT_SEED 1
-/* A uint64_t has at most 64 prime factors (2^64), and the recursion is at
- * most one level deeper than that. */
-#define FCT_FACTORIZATION_DEFAULT_MAX_FACTORS 64
-#define FCT_FACTORIZATION_DEFAULT_MAX_DEPTH 64
+#define FACTORIZE_DEFAULT_ITERATIONS (1ULL << 20)
+#define FACTORIZE_DEFAULT_RETRIES 8
+#define FACTORIZE_DEFAULT_BOUND 100000ULL
+#define FACTORIZE_DEFAULT_BASES 5
+#define FACTORIZE_DEFAULT_SEED 1
+#define FACTORIZE_DEFAULT_DEPTH 64
+#define FACTORIZE_DEFAULT_MAX_FACTORS 64
+
+/* A uint64_t has at most 64 prime factors (2^64 = 2 * 2 * ...). */
+#define MAX_FACTORS 64
 
 typedef struct {
-    uint64_t max_iterations;      /* per-attempt budget for Fermat and Rho;
-                                   * 0 => default 2^20                  */
-    uint64_t max_retries;         /* Rho attempts per node; 0 => default 8 */
-    uint64_t smoothness_bound;    /* p-1 bound; 0 => default 100000     */
-    uint64_t max_bases;           /* p-1 bases; 0 => default 5          */
-    uint64_t seed;                /* Rho seed; 0 => default 1           */
-    uint64_t max_depth;           /* recursion cap; 0 => default 64     */
-    uint64_t max_factors;         /* factor-array cap; 0 => default 64  */
-} fct_factorization_config;
+    uint64_t max_iterations;   /* Fermat and Rho budget per node    */
+    uint64_t max_retries;      /* Rho attempts per node             */
+    uint64_t seed;             /* Rho seed                          */
+    uint64_t smoothness_bound; /* p-1 bound B                       */
+    uint64_t max_bases;        /* p-1 bases per node                */
+    uint64_t max_depth;        /* recursion depth cap               */
+    uint64_t max_factors;      /* factor array cap (<= MAX_FACTORS) */
+} FactorizeOptions;
 
-fct_factorization_config fct_factorization_config_default(void);
+FactorizeOptions default_options(void);
 
 typedef struct {
-    fct_status status;            /* FCT_OK, FCT_INCOMPLETE, ...        */
+    ResultCode code;
     uint64_t n;
-    uint64_t *factors;            /* heap; sorted ascending with
-                                   * multiplicity; may be NULL if none  */
-    size_t factor_count;
-    uint64_t *unresolved_cofactors; /* heap; composites left unsplit     */
-    size_t unresolved_count;
-    uint64_t product;             /* product of factors                 */
-    bool product_verified;        /* true iff product == n exactly      */
-    uint64_t iterations;          /* summed over all algorithm calls    */
+    uint64_t factors[MAX_FACTORS];
+    int factor_count;
+    uint64_t unresolved[MAX_FACTORS];
+    int unresolved_count;
+    uint64_t product;
+    bool product_verified;
+    uint64_t iterations;
     uint64_t gcd_calls;
     uint64_t modmul_ops;
-    fct_termination reason;       /* the limiting factor, if incomplete */
-} fct_factorization;
+} Factorization;
 
-/* Factors n (n >= 2). Never fails silently: every outcome is explicit.
- * The caller must release the result with fct_factorization_free(). */
-fct_factorization fct_factorize(uint64_t n, const fct_factorization_config *cfg);
-
-void fct_factorization_free(fct_factorization *f);
+/* Factors n >= 2. Pass NULL for the default options. */
+Factorization factorize(uint64_t n, const FactorizeOptions *opt);
 
 #endif /* FACTORIUM_FACTORIZATION_H */

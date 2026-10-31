@@ -1,23 +1,14 @@
 /*
- * factorium/src/main.c — command-line interface.
+ * factorium/src/main.c — command line interface.
  *
- * The CLI owns parsing, presentation (human or JSON), timing, and exit
- * codes; it contains no factorization logic of its own.
- *
- * Exit codes:
- *   0  success: factor found / complete factorization / valid verification
- *   1  no factor found within the configured budget (a normal outcome of
- *      a limited search, never a primality claim)
- *   2  invalid input or usage error
- *   3  incomplete factorization (unresolved cofactors remain)
- *   4  work/resource limit reached
- *   5  memory or internal failure
+ * Commands: factor, compare, verify, help. The human-readable output and
+ * the --json output are both produced here; the algorithm code never
+ * prints anything.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include <inttypes.h>
 #include <stdbool.h>
-#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,252 +25,7 @@
 #define U64_FMT PRIu64
 
 /* ------------------------------------------------------------------ */
-/* status -> exit code                                                */
-/* ------------------------------------------------------------------ */
-
-static int exit_code_for_status(fct_status s)
-{
-    switch (s) {
-    case FCT_OK: return 0;
-    case FCT_NO_FACTOR: return 1;
-    case FCT_INVALID_INPUT: return 2;
-    case FCT_INCOMPLETE: return 3;
-    case FCT_WORK_LIMIT: return 4;
-    case FCT_MEMORY:
-    case FCT_INTERNAL:
-    case FCT_RECONSTRUCTION_FAILED: return 5;
-    }
-    return 5;
-}
-
-/* ------------------------------------------------------------------ */
-/* strict uint64 parsing (digits only, no signs, no locale surprises) */
-/* ------------------------------------------------------------------ */
-
-static bool parse_u64(const char *s, uint64_t *out)
-{
-    if (s == NULL || *s == '\0')
-        return false;
-    uint64_t v = 0;
-    for (const char *p = s; *p != '\0'; p++) {
-        if (*p < '0' || *p > '9')
-            return false;
-        uint64_t digit = (uint64_t)(*p - '0');
-        if (v > (UINT64_MAX - digit) / 10)
-            return false; /* would overflow */
-        v = v * 10 + digit;
-    }
-    *out = v;
-    return true;
-}
-
-/* ------------------------------------------------------------------ */
-/* minimal growable JSON writer with string escaping                  */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    bool failed;     /* allocation failure: output is silently dropped  */
-    bool need_comma; /* separator state for object/array elements       */
-} jbuf;
-
-static void jb_init(jbuf *b)
-{
-    b->data = NULL;
-    b->len = 0;
-    b->cap = 0;
-    b->failed = false;
-    b->need_comma = false;
-}
-
-static void jb_free(jbuf *b)
-{
-    free(b->data);
-    b->data = NULL;
-    b->len = b->cap = 0;
-}
-
-static bool jb_reserve(jbuf *b, size_t extra)
-{
-    if (b->failed)
-        return false;
-    if (b->len + extra + 1 <= b->cap)
-        return true;
-    size_t ncap = b->cap ? b->cap : 256;
-    while (ncap < b->len + extra + 1) {
-        if (ncap > SIZE_MAX / 2) {
-            b->failed = true;
-            return false;
-        }
-        ncap *= 2;
-    }
-    char *nd = (char *)realloc(b->data, ncap);
-    if (nd == NULL) {
-        b->failed = true;
-        return false;
-    }
-    b->data = nd;
-    b->cap = ncap;
-    return true;
-}
-
-static void jb_putc(jbuf *b, char c)
-{
-    if (!jb_reserve(b, 1))
-        return;
-    b->data[b->len++] = c;
-    b->data[b->len] = '\0';
-}
-
-static void jb_puts(jbuf *b, const char *s)
-{
-    size_t n = strlen(s);
-    if (!jb_reserve(b, n))
-        return;
-    memcpy(b->data + b->len, s, n);
-    b->len += n;
-    b->data[b->len] = '\0';
-}
-
-static void jb_put_escaped(jbuf *b, const char *s)
-{
-    jb_putc(b, '"');
-    for (const char *p = s; *p != '\0'; p++) {
-        unsigned char ch = (unsigned char)*p;
-        switch (ch) {
-        case '"': jb_puts(b, "\\\""); break;
-        case '\\': jb_puts(b, "\\\\"); break;
-        case '\b': jb_puts(b, "\\b"); break;
-        case '\f': jb_puts(b, "\\f"); break;
-        case '\n': jb_puts(b, "\\n"); break;
-        case '\r': jb_puts(b, "\\r"); break;
-        case '\t': jb_puts(b, "\\t"); break;
-        default:
-            if (ch < 0x20) {
-                char tmp[7];
-                snprintf(tmp, sizeof(tmp), "\\u%04x", (unsigned)ch);
-                jb_puts(b, tmp);
-            } else {
-                jb_putc(b, (char)ch);
-            }
-        }
-    }
-    jb_putc(b, '"');
-}
-
-static void jb_sep(jbuf *b)
-{
-    if (b->need_comma)
-        jb_putc(b, ',');
-}
-
-static void jb_obj_begin(jbuf *b)
-{
-    jb_sep(b);
-    jb_putc(b, '{');
-    b->need_comma = false;
-}
-
-static void jb_obj_end(jbuf *b)
-{
-    jb_putc(b, '}');
-    b->need_comma = true;
-}
-
-static void jb_arr_begin(jbuf *b)
-{
-    jb_sep(b);
-    jb_putc(b, '[');
-    b->need_comma = false;
-}
-
-static void jb_arr_end(jbuf *b)
-{
-    jb_putc(b, ']');
-    b->need_comma = true;
-}
-
-static void jb_key(jbuf *b, const char *key)
-{
-    jb_sep(b);
-    jb_put_escaped(b, key);
-    jb_putc(b, ':');
-    b->need_comma = false; /* value follows without a separator */
-}
-
-static void jb_kv_str(jbuf *b, const char *key, const char *val)
-{
-    jb_key(b, key);
-    jb_put_escaped(b, val);
-    b->need_comma = true;
-}
-
-static void jb_kv_u64(jbuf *b, const char *key, uint64_t val)
-{
-    char tmp[32];
-    snprintf(tmp, sizeof(tmp), "%" U64_FMT, val);
-    jb_key(b, key);
-    jb_puts(b, tmp);
-    b->need_comma = true;
-}
-
-static void jb_kv_bool(jbuf *b, const char *key, bool val)
-{
-    jb_key(b, key);
-    jb_puts(b, val ? "true" : "false");
-    b->need_comma = true;
-}
-
-static void jb_arr_u64(jbuf *b, const uint64_t *vals, size_t count)
-{
-    jb_arr_begin(b);
-    for (size_t i = 0; i < count; i++) {
-        char tmp[32];
-        snprintf(tmp, sizeof(tmp), "%" U64_FMT, vals[i]);
-        jb_sep(b);
-        jb_puts(b, tmp);
-        b->need_comma = true;
-    }
-    jb_arr_end(b);
-}
-
-static void jb_arr_result(jbuf *b, const char *const *algos,
-                          const fct_factor_result *rs, size_t count)
-{
-    jb_arr_begin(b);
-    for (size_t i = 0; i < count; i++) {
-        jb_obj_begin(b);
-        jb_kv_str(b, "algorithm", algos[i]);
-        jb_kv_str(b, "status", fct_status_str(rs[i].status));
-        jb_kv_str(b, "reason", fct_termination_str(rs[i].reason));
-        jb_kv_u64(b, "factor", rs[i].factor);
-        jb_kv_u64(b, "cofactor", rs[i].cofactor);
-        jb_kv_u64(b, "iterations", rs[i].iterations);
-        jb_kv_u64(b, "gcd_calls", rs[i].gcd_calls);
-        jb_kv_u64(b, "modmul_ops", rs[i].modmul_ops);
-        jb_kv_u64(b, "seed", rs[i].seed);
-        jb_kv_u64(b, "c", rs[i].c);
-        jb_obj_end(b);
-    }
-    jb_arr_end(b);
-}
-
-/* Emit a finished buffer plus newline, or fail loudly. */
-static int jb_flush(const jbuf *b)
-{
-    if (b->failed) {
-        fprintf(stderr, "error: out of memory while building JSON output\n");
-        return 5;
-    }
-    fputs(b->data ? b->data : "{}", stdout);
-    fputc('\n', stdout);
-    return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* usage / diagnostics                                                */
+/* usage                                                              */
 /* ------------------------------------------------------------------ */
 
 static void print_usage(FILE *out)
@@ -316,20 +62,120 @@ static void print_usage(FILE *out)
         out);
 }
 
-/* Report a usage/input error in the requested channel; returns exit code. */
+/* Strict uint64 parsing: digits only, nothing else. */
+static bool parse_u64(const char *s, uint64_t *out)
+{
+    uint64_t value = 0;
+
+    if (s == NULL || *s == '\0')
+        return false;
+    for (; *s != '\0'; s++) {
+        if (*s < '0' || *s > '9')
+            return false;
+        if (value > (UINT64_MAX - (uint64_t)(*s - '0')) / 10)
+            return false; /* would overflow */
+        value = value * 10 + (uint64_t)(*s - '0');
+    }
+    *out = value;
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* JSON output                                                        */
+/* ------------------------------------------------------------------ */
+
+/* Prints one JSON object in a single line. `need_comma` mirrors the old
+ * buffer: it is true when the next element needs a leading comma. */
+typedef struct {
+    bool need_comma;
+} Json;
+
+static void json_sep(Json *j)
+{
+    if (j->need_comma)
+        putchar(',');
+}
+
+static void json_object_begin(Json *j)
+{
+    json_sep(j);
+    putchar('{');
+    j->need_comma = false;
+}
+
+static void json_object_end(Json *j)
+{
+    putchar('}');
+    j->need_comma = true;
+}
+
+static void json_array_begin(Json *j)
+{
+    json_sep(j);
+    putchar('[');
+    j->need_comma = false;
+}
+
+static void json_array_end(Json *j)
+{
+    putchar(']');
+    j->need_comma = true;
+}
+
+static void json_key(Json *j, const char *key)
+{
+    json_sep(j);
+    printf("\"%s\":", key);
+    j->need_comma = false;
+}
+
+static void json_string(Json *j, const char *key, const char *value)
+{
+    json_key(j, key);
+    printf("\"%s\"", value);
+    j->need_comma = true;
+}
+
+static void json_u64(Json *j, const char *key, uint64_t value)
+{
+    json_key(j, key);
+    printf("%" U64_FMT, value);
+    j->need_comma = true;
+}
+
+static void json_bool(Json *j, const char *key, bool value)
+{
+    json_key(j, key);
+    fputs(value ? "true" : "false", stdout);
+    j->need_comma = true;
+}
+
+static void json_u64_array(Json *j, const char *key,
+                           const uint64_t *values, int count)
+{
+    int i;
+    json_key(j, key);
+    json_array_begin(j);
+    for (i = 0; i < count; i++) {
+        json_sep(j);
+        printf("%" U64_FMT, values[i]);
+        j->need_comma = true;
+    }
+    json_array_end(j);
+}
+
+/* Report a usage/input error on the requested channel; returns 2. */
 static int report_error(const char *msg, bool json, const char *cmd)
 {
     if (json) {
-        jbuf b;
-        jb_init(&b);
-        jb_obj_begin(&b);
-        jb_kv_str(&b, "command", cmd ? cmd : "");
-        jb_kv_str(&b, "status", "invalid_input");
-        jb_kv_str(&b, "error", msg);
-        jb_obj_end(&b);
-        int rc = jb_flush(&b);
-        jb_free(&b);
-        return rc == 0 ? 2 : rc;
+        Json j = {false};
+        json_object_begin(&j);
+        json_string(&j, "command", cmd ? cmd : "");
+        json_string(&j, "status", "invalid_input");
+        json_string(&j, "error", msg);
+        json_object_end(&j);
+        putchar('\n');
+        return 2;
     }
     fprintf(stderr, "error: %s\n\n", msg);
     print_usage(stderr);
@@ -345,10 +191,10 @@ typedef enum {
     ALGO_FERMAT,
     ALGO_RHO,
     ALGO_PMINUS1
-} algo_t;
+} Algo;
 
 typedef struct {
-    algo_t algo;
+    Algo algo;
     uint64_t iters;
     uint64_t retries;
     uint64_t seed;
@@ -356,23 +202,18 @@ typedef struct {
     uint64_t bases;
     bool json;
     bool show_time;
-} options;
+} Options;
 
-static void options_init(options *o)
+static void options_init(Options *o)
 {
+    memset(o, 0, sizeof(*o));
     o->algo = ALGO_AUTO;
-    o->iters = 0;
-    o->retries = 0;
-    o->seed = 0;
-    o->b = 0;
-    o->bases = 0;
-    o->json = false;
-    o->show_time = false;
 }
 
 static bool json_flag_present(int argc, char **argv)
 {
-    for (int i = 2; i < argc; i++) {
+    int i;
+    for (i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--json") == 0)
             return true;
     }
@@ -382,79 +223,80 @@ static bool json_flag_present(int argc, char **argv)
 static const char *const OPTION_HELP_HINT =
     "expected a value for an option (--iters, --retries, --seed, --b, --bases)";
 
-/* Parses flags/options for factor/compare; the first positional is *n.
- * Returns 0 on success, or an error code already reported. */
-static int parse_factor_args(int argc, char **argv, options *o, uint64_t *n,
+/* Parses the arguments of factor/compare. Returns -1 when parsing is done,
+ * or the exit code of an error that was already reported. */
+static int parse_factor_args(int argc, char **argv, Options *o, uint64_t *n,
                              bool *have_n, const char *cmd, bool json)
 {
-    for (int i = 2; i < argc; i++) {
-        const char *a = argv[i];
-        if (strncmp(a, "--", 2) == 0) {
-            if (strcmp(a, "--json") == 0) {
+    int i;
+    for (i = 2; i < argc; i++) {
+        const char *arg = argv[i];
+
+        if (strncmp(arg, "--", 2) == 0) {
+            if (strcmp(arg, "--json") == 0) {
                 o->json = true;
-            } else if (strcmp(a, "--time") == 0) {
+            } else if (strcmp(arg, "--time") == 0) {
                 o->show_time = true;
-            } else if (strcmp(a, "--algo") == 0) {
+            } else if (strcmp(arg, "--algo") == 0) {
+                const char *value;
                 if (i + 1 >= argc)
                     return report_error("expected a value for --algo", json, cmd);
-                const char *val = argv[++i];
-                if (strcmp(val, "auto") == 0) {
+                value = argv[++i];
+                if (strcmp(value, "auto") == 0)
                     o->algo = ALGO_AUTO;
-                } else if (strcmp(val, "fermat") == 0) {
+                else if (strcmp(value, "fermat") == 0)
                     o->algo = ALGO_FERMAT;
-                } else if (strcmp(val, "rho") == 0) {
+                else if (strcmp(value, "rho") == 0)
                     o->algo = ALGO_RHO;
-                } else if (strcmp(val, "pminus1") == 0) {
+                else if (strcmp(value, "pminus1") == 0)
                     o->algo = ALGO_PMINUS1;
-                } else {
-                    return report_error(
-                        "--algo must be auto, fermat, rho or pminus1",
-                        json, cmd);
-                }
-            } else if (strcmp(a, "--iters") == 0 || strcmp(a, "--retries") == 0 ||
-                       strcmp(a, "--seed") == 0 || strcmp(a, "--b") == 0 ||
-                       strcmp(a, "--bases") == 0) {
+                else
+                    return report_error("--algo must be auto, fermat, rho or pminus1",
+                                        json, cmd);
+            } else if (strcmp(arg, "--iters") == 0 ||
+                       strcmp(arg, "--retries") == 0 ||
+                       strcmp(arg, "--seed") == 0 ||
+                       strcmp(arg, "--b") == 0 ||
+                       strcmp(arg, "--bases") == 0) {
+                uint64_t value;
                 if (i + 1 >= argc)
                     return report_error(OPTION_HELP_HINT, json, cmd);
-                const char *val = argv[++i];
-                uint64_t nv;
-                if (!parse_u64(val, &nv))
+                if (!parse_u64(argv[++i], &value))
                     return report_error("option value is not a non-negative integer",
                                         json, cmd);
-                if (strcmp(a, "--iters") == 0) {
-                    o->iters = nv;
-                } else if (strcmp(a, "--retries") == 0) {
-                    o->retries = nv;
-                } else if (strcmp(a, "--seed") == 0) {
-                    o->seed = nv;
-                } else if (strcmp(a, "--b") == 0) {
-                    o->b = nv;
-                } else {
-                    o->bases = nv;
-                }
+                if (strcmp(arg, "--iters") == 0)
+                    o->iters = value;
+                else if (strcmp(arg, "--retries") == 0)
+                    o->retries = value;
+                else if (strcmp(arg, "--seed") == 0)
+                    o->seed = value;
+                else if (strcmp(arg, "--b") == 0)
+                    o->b = value;
+                else
+                    o->bases = value;
             } else {
                 return report_error("unknown option", json, cmd);
             }
         } else {
             if (*have_n)
                 return report_error("unexpected extra argument", json, cmd);
-            if (!parse_u64(a, n))
+            if (!parse_u64(arg, n))
                 return report_error("n is not a non-negative integer", json, cmd);
             *have_n = true;
         }
     }
     if (!*have_n)
         return report_error("missing required argument <n>", json, cmd);
-    return -1; /* caller continues */
+    return -1;
 }
 
 /* ------------------------------------------------------------------ */
 /* factor                                                             */
 /* ------------------------------------------------------------------ */
 
-static const char *algo_name(algo_t a)
+static const char *algo_name(Algo algo)
 {
-    switch (a) {
+    switch (algo) {
     case ALGO_AUTO: return "auto";
     case ALGO_FERMAT: return "fermat";
     case ALGO_RHO: return "rho";
@@ -463,102 +305,86 @@ static const char *algo_name(algo_t a)
     return "unknown";
 }
 
-static fct_factor_result run_single(uint64_t n, const options *o)
+static FactorResult run_single(uint64_t n, const Options *o)
 {
     switch (o->algo) {
-    case ALGO_FERMAT: {
-        fct_fermat_config c;
-        c.max_iterations = o->iters ? o->iters
-                                    : FCT_FERMAT_DEFAULT_MAX_ITERATIONS;
-        return fct_fermat(n, &c);
-    }
-    case ALGO_RHO: {
-        fct_rho_config c;
-        c.max_iterations_per_attempt =
-            o->iters ? o->iters : FCT_RHO_DEFAULT_MAX_ITERATIONS;
-        c.max_retries = o->retries ? o->retries : FCT_RHO_DEFAULT_MAX_RETRIES;
-        c.seed = o->seed ? o->seed : FCT_RHO_DEFAULT_SEED;
-        return fct_pollard_rho(n, &c);
-    }
-    case ALGO_PMINUS1: {
-        fct_pminus1_config c;
-        c.smoothness_bound = o->b ? o->b : FCT_PM1_DEFAULT_SMOOTHNESS_BOUND;
-        c.start_base = 0; /* 0 => default 2 */
-        c.max_bases = o->bases ? o->bases : FCT_PM1_DEFAULT_MAX_BASES;
-        c.max_modmul_ops = 0; /* 0 => default cap */
-        return fct_pollard_p_minus_one(n, &c);
-    }
+    case ALGO_FERMAT:
+        return fermat(n, o->iters ? o->iters : FERMAT_DEFAULT_ITERATIONS);
+    case ALGO_RHO:
+        return rho(n, o->iters ? o->iters : RHO_DEFAULT_ITERATIONS,
+                   o->retries ? o->retries : RHO_DEFAULT_RETRIES,
+                   o->seed ? o->seed : RHO_DEFAULT_SEED);
+    case ALGO_PMINUS1:
+        return pminus1(n, o->b ? o->b : PM1_DEFAULT_BOUND,
+                       PM1_DEFAULT_START_BASE,
+                       o->bases ? o->bases : PM1_DEFAULT_BASES,
+                       PM1_DEFAULT_MAX_OPS);
     case ALGO_AUTO:
-    default:
-        break;
+    default: {
+        FactorResult bad = {0};
+        bad.code = RESULT_INVALID;
+        return bad;
     }
-    fct_factor_result invalid;
-    memset(&invalid, 0, sizeof(invalid));
-    invalid.status = FCT_INVALID_INPUT;
-    invalid.reason = FCT_TERM_INVALID_INPUT;
-    return invalid;
+    }
 }
 
-static void print_single_human(uint64_t n, const options *o,
-                               const fct_factor_result *r)
+static void print_single_human(uint64_t n, const Options *o,
+                               const FactorResult *r)
 {
     printf("command  : factor\n");
     printf("n        : %" U64_FMT "\n", n);
     printf("algorithm: %s\n", algo_name(o->algo));
-    printf("status   : %s\n", fct_status_str(r->status));
-    printf("reason   : %s\n", fct_termination_str(r->reason));
-    printf("factor   : ");
-    if (r->status == FCT_OK)
-        printf("%" U64_FMT "\n", r->factor);
+    printf("status   : %s\n", status_string(r->code));
+    printf("reason   : %s\n", reason_string(r->code));
+    if (r->code == RESULT_FOUND)
+        printf("factor   : %" U64_FMT "\n", r->factor);
     else
-        printf("-\n");
-    printf("cofactor : ");
-    if (r->status == FCT_OK)
-        printf("%" U64_FMT "\n", r->cofactor);
+        printf("factor   : -\n");
+    if (r->code == RESULT_FOUND)
+        printf("cofactor : %" U64_FMT "\n", r->cofactor);
     else
-        printf("-\n");
+        printf("cofactor : -\n");
     printf("iterations: %" U64_FMT "\n", r->iterations);
     printf("gcd_calls: %" U64_FMT "\n", r->gcd_calls);
     printf("modmul_ops: %" U64_FMT "\n", r->modmul_ops);
-    if (o->algo == ALGO_RHO && r->status == FCT_OK) {
+    if (o->algo == ALGO_RHO && r->code == RESULT_FOUND) {
         printf("seed     : %" U64_FMT "\n", r->seed);
         printf("c        : %" U64_FMT "\n", r->c);
     }
 }
 
-static int cmd_factor_single(uint64_t n, const options *o)
+static int cmd_factor_single(uint64_t n, const Options *o)
 {
-    fct_factor_result r = run_single(n, o);
+    FactorResult r = run_single(n, o);
+
     if (o->json) {
-        jbuf b;
-        jb_init(&b);
-        jb_obj_begin(&b);
-        jb_kv_str(&b, "command", "factor");
-        jb_kv_u64(&b, "n", n);
-        jb_kv_str(&b, "algorithm", algo_name(o->algo));
-        jb_kv_str(&b, "status", fct_status_str(r.status));
-        jb_kv_str(&b, "reason", fct_termination_str(r.reason));
-        jb_kv_u64(&b, "factor", r.factor);
-        jb_kv_u64(&b, "cofactor", r.cofactor);
-        jb_kv_u64(&b, "iterations", r.iterations);
-        jb_kv_u64(&b, "gcd_calls", r.gcd_calls);
-        jb_kv_u64(&b, "modmul_ops", r.modmul_ops);
-        jb_kv_u64(&b, "seed", r.seed);
-        jb_kv_u64(&b, "c", r.c);
-        jb_obj_end(&b);
-        int rc = jb_flush(&b);
-        jb_free(&b);
-        if (rc != 0)
-            return rc;
+        Json j = {false};
+        json_object_begin(&j);
+        json_string(&j, "command", "factor");
+        json_u64(&j, "n", n);
+        json_string(&j, "algorithm", algo_name(o->algo));
+        json_string(&j, "status", status_string(r.code));
+        json_string(&j, "reason", reason_string(r.code));
+        json_u64(&j, "factor", r.factor);
+        json_u64(&j, "cofactor", r.cofactor);
+        json_u64(&j, "iterations", r.iterations);
+        json_u64(&j, "gcd_calls", r.gcd_calls);
+        json_u64(&j, "modmul_ops", r.modmul_ops);
+        json_u64(&j, "seed", r.seed);
+        json_u64(&j, "c", r.c);
+        json_object_end(&j);
+        putchar('\n');
     } else {
         print_single_human(n, o, &r);
     }
-    return exit_code_for_status(r.status);
+    return exit_code(r.code);
 }
 
-static int cmd_factor_auto(uint64_t n, const options *o)
+static int cmd_factor_auto(uint64_t n, const Options *o)
 {
-    fct_factorization_config cfg = fct_factorization_config_default();
+    FactorizeOptions cfg = default_options();
+    Factorization f;
+
     if (o->iters)
         cfg.max_iterations = o->iters;
     if (o->retries)
@@ -570,51 +396,44 @@ static int cmd_factor_auto(uint64_t n, const options *o)
     if (o->bases)
         cfg.max_bases = o->bases;
 
-    fct_factorization f = fct_factorize(n, &cfg);
+    f = factorize(n, &cfg);
 
     if (o->json) {
-        jbuf b;
-        jb_init(&b);
-        jb_obj_begin(&b);
-        jb_kv_str(&b, "command", "factor");
-        jb_kv_u64(&b, "n", n);
-        jb_kv_str(&b, "algorithm", "auto");
-        jb_kv_str(&b, "status", fct_status_str(f.status));
-        jb_kv_str(&b, "reason", fct_termination_str(f.reason));
-        jb_key(&b, "factors");
-        jb_arr_u64(&b, f.factors, f.factor_count);
-        jb_key(&b, "unresolved");
-        jb_arr_u64(&b, f.unresolved_cofactors, f.unresolved_count);
-        jb_kv_u64(&b, "product", f.product);
-        jb_kv_bool(&b, "product_verified", f.product_verified);
-        jb_kv_u64(&b, "iterations", f.iterations);
-        jb_kv_u64(&b, "gcd_calls", f.gcd_calls);
-        jb_kv_u64(&b, "modmul_ops", f.modmul_ops);
-        jb_obj_end(&b);
-        int rc = jb_flush(&b);
-        jb_free(&b);
-        if (rc != 0) {
-            fct_factorization_free(&f);
-            return rc;
-        }
+        Json j = {false};
+        json_object_begin(&j);
+        json_string(&j, "command", "factor");
+        json_u64(&j, "n", n);
+        json_string(&j, "algorithm", "auto");
+        json_string(&j, "status", status_string(f.code));
+        json_string(&j, "reason", reason_string(f.code));
+        json_u64_array(&j, "factors", f.factors, f.factor_count);
+        json_u64_array(&j, "unresolved", f.unresolved, f.unresolved_count);
+        json_u64(&j, "product", f.product);
+        json_bool(&j, "product_verified", f.product_verified);
+        json_u64(&j, "iterations", f.iterations);
+        json_u64(&j, "gcd_calls", f.gcd_calls);
+        json_u64(&j, "modmul_ops", f.modmul_ops);
+        json_object_end(&j);
+        putchar('\n');
     } else {
+        int i;
         printf("command  : factor\n");
         printf("n        : %" U64_FMT "\n", n);
         printf("algorithm: auto\n");
-        printf("status   : %s\n", fct_status_str(f.status));
-        printf("reason   : %s\n", fct_termination_str(f.reason));
+        printf("status   : %s\n", status_string(f.code));
+        printf("reason   : %s\n", reason_string(f.code));
         printf("factors  :");
         if (f.factor_count == 0) {
             printf(" (none)\n");
         } else {
-            for (size_t i = 0; i < f.factor_count; i++)
+            for (i = 0; i < f.factor_count; i++)
                 printf(" %" U64_FMT, f.factors[i]);
             printf("\n");
         }
         if (f.unresolved_count > 0) {
             printf("unresolved:");
-            for (size_t i = 0; i < f.unresolved_count; i++)
-                printf(" %" U64_FMT, f.unresolved_cofactors[i]);
+            for (i = 0; i < f.unresolved_count; i++)
+                printf(" %" U64_FMT, f.unresolved[i]);
             printf("\n");
         }
         printf("product  : %" U64_FMT "%s\n", f.product,
@@ -623,140 +442,141 @@ static int cmd_factor_auto(uint64_t n, const options *o)
         printf("gcd_calls: %" U64_FMT "\n", f.gcd_calls);
         printf("modmul_ops: %" U64_FMT "\n", f.modmul_ops);
     }
-
-    fct_status st = f.status;
-    fct_factorization_free(&f);
-    return exit_code_for_status(st);
+    return exit_code(f.code);
 }
 
 /* ------------------------------------------------------------------ */
 /* compare                                                            */
 /* ------------------------------------------------------------------ */
 
-static int cmd_compare(uint64_t n, const options *o)
+static void print_result_json(Json *j, const char *algo, const FactorResult *r)
+{
+    json_object_begin(j);
+    json_string(j, "algorithm", algo);
+    json_string(j, "status", status_string(r->code));
+    json_string(j, "reason", reason_string(r->code));
+    json_u64(j, "factor", r->factor);
+    json_u64(j, "cofactor", r->cofactor);
+    json_u64(j, "iterations", r->iterations);
+    json_u64(j, "gcd_calls", r->gcd_calls);
+    json_u64(j, "modmul_ops", r->modmul_ops);
+    json_u64(j, "seed", r->seed);
+    json_u64(j, "c", r->c);
+    json_object_end(j);
+}
+
+static int cmd_compare(uint64_t n, const Options *o)
 {
     static const char *const names[] = {"fermat", "rho", "pminus1"};
-    fct_factor_result rs[3];
-    rs[0] = fct_fermat(n, &(fct_fermat_config){
-                               .max_iterations = o->iters
-                                                     ? o->iters
-                                                     : FCT_FERMAT_DEFAULT_MAX_ITERATIONS});
-    rs[1] = fct_pollard_rho(n,
-                            &(fct_rho_config){
-                                .max_iterations_per_attempt =
-                                    o->iters ? o->iters
-                                             : FCT_RHO_DEFAULT_MAX_ITERATIONS,
-                                .max_retries = o->retries ? o->retries
-                                                          : FCT_RHO_DEFAULT_MAX_RETRIES,
-                                .seed = o->seed ? o->seed : FCT_RHO_DEFAULT_SEED});
-    rs[2] = fct_pollard_p_minus_one(n,
-                                    &(fct_pminus1_config){
-                                        .smoothness_bound =
-                                            o->b ? o->b
-                                                 : FCT_PM1_DEFAULT_SMOOTHNESS_BOUND,
-                                        .start_base = 0,
-                                        .max_bases = o->bases ? o->bases
-                                                              : FCT_PM1_DEFAULT_MAX_BASES,
-                                        .max_modmul_ops = 0});
+    FactorResult rs[3];
+    ResultCode overall = RESULT_COMPLETE;
+    int i;
 
-    /* Overall status: any invalid => invalid; all found => ok; else none. */
-    fct_status overall = FCT_OK;
-    for (int i = 0; i < 3; i++) {
-        if (rs[i].status == FCT_INVALID_INPUT)
-            overall = FCT_INVALID_INPUT;
-        else if (rs[i].status != FCT_OK && overall != FCT_INVALID_INPUT)
-            overall = FCT_NO_FACTOR;
+    rs[0] = fermat(n, o->iters ? o->iters : FERMAT_DEFAULT_ITERATIONS);
+    rs[1] = rho(n, o->iters ? o->iters : RHO_DEFAULT_ITERATIONS,
+                o->retries ? o->retries : RHO_DEFAULT_RETRIES,
+                o->seed ? o->seed : RHO_DEFAULT_SEED);
+    rs[2] = pminus1(n, o->b ? o->b : PM1_DEFAULT_BOUND,
+                    PM1_DEFAULT_START_BASE,
+                    o->bases ? o->bases : PM1_DEFAULT_BASES,
+                    PM1_DEFAULT_MAX_OPS);
+
+    /* Any invalid input wins; otherwise ok only if all three succeeded. */
+    for (i = 0; i < 3; i++) {
+        if (rs[i].code == RESULT_INVALID)
+            overall = RESULT_INVALID;
+        else if (rs[i].code != RESULT_FOUND && overall != RESULT_INVALID)
+            overall = RESULT_NO_FACTOR;
     }
 
     if (o->json) {
-        jbuf b;
-        jb_init(&b);
-        jb_obj_begin(&b);
-        jb_kv_str(&b, "command", "compare");
-        jb_kv_u64(&b, "n", n);
-        jb_kv_str(&b, "status", fct_status_str(overall));
-        jb_key(&b, "results");
-        jb_arr_result(&b, names, rs, 3);
-        jb_obj_end(&b);
-        int rc = jb_flush(&b);
-        jb_free(&b);
-        if (rc != 0)
-            return rc;
+        Json j = {false};
+        json_object_begin(&j);
+        json_string(&j, "command", "compare");
+        json_u64(&j, "n", n);
+        json_string(&j, "status", status_string(overall));
+        json_key(&j, "results");
+        json_array_begin(&j);
+        for (i = 0; i < 3; i++)
+            print_result_json(&j, names[i], &rs[i]);
+        json_array_end(&j);
+        json_object_end(&j);
+        putchar('\n');
     } else {
         printf("n = %" U64_FMT "\n\n", n);
         printf("%-10s %-12s %-17s %-10s %-10s %11s %10s %11s\n",
                "algorithm", "status", "reason", "factor", "cofactor",
                "iterations", "gcd_calls", "modmul_ops");
-        for (int i = 0; i < 3; i++) {
+        for (i = 0; i < 3; i++) {
             printf("%-10s %-12s %-17s ", names[i],
-                   fct_status_str(rs[i].status),
-                   fct_termination_str(rs[i].reason));
-            if (rs[i].status == FCT_OK) {
-                printf("%-10" U64_FMT " %-10" U64_FMT " ", rs[i].factor,
-                       rs[i].cofactor);
-            } else {
+                   status_string(rs[i].code), reason_string(rs[i].code));
+            if (rs[i].code == RESULT_FOUND)
+                printf("%-10" U64_FMT " %-10" U64_FMT " ",
+                       rs[i].factor, rs[i].cofactor);
+            else
                 printf("%-10s %-10s ", "-", "-");
-            }
             printf("%11" U64_FMT " %10" U64_FMT " %11" U64_FMT "\n",
                    rs[i].iterations, rs[i].gcd_calls, rs[i].modmul_ops);
         }
     }
-    return exit_code_for_status(overall);
+    return exit_code(overall);
 }
 
 /* ------------------------------------------------------------------ */
 /* verify                                                             */
 /* ------------------------------------------------------------------ */
 
-static int cmd_verify(uint64_t n, const uint64_t *fs, size_t k, bool json)
+static int cmd_verify(uint64_t n, const uint64_t *factors, size_t count,
+                      bool json)
 {
+    uint64_t product = 1;
+    bool overflow = false;
+    bool matches;
+    bool all_prime = true;
+    bool valid;
+    size_t i;
+
     if (n < 2)
         return report_error("verify requires n >= 2", json, "verify");
-    if (k == 0)
-        return report_error("verify requires at least one factor", json, "verify");
+    if (count == 0)
+        return report_error("verify requires at least one factor", json,
+                            "verify");
 
-    uint64_t prod = 1;
-    bool overflow = false;
-    for (size_t i = 0; i < k; i++) {
-        if (!fct_mul_checked(prod, fs[i], &prod)) {
+    for (i = 0; i < count; i++) {
+        if (!mul_checked(product, factors[i], &product)) {
             overflow = true;
             break;
         }
     }
-    bool matches = !overflow && prod == n;
-    bool all_prime = true;
-    for (size_t i = 0; i < k; i++) {
-        if (!fct_is_prime(fs[i]))
+    matches = !overflow && product == n;
+
+    for (i = 0; i < count; i++) {
+        if (!is_prime(factors[i]))
             all_prime = false;
     }
-    bool valid = matches && all_prime;
+    valid = matches && all_prime;
 
     if (json) {
-        jbuf b;
-        jb_init(&b);
-        jb_obj_begin(&b);
-        jb_kv_str(&b, "command", "verify");
-        jb_kv_u64(&b, "n", n);
-        jb_kv_str(&b, "status", valid ? "ok" : "reconstruction_failed");
-        jb_key(&b, "factors");
-        jb_arr_u64(&b, fs, k);
-        jb_kv_u64(&b, "product", overflow ? 0 : prod);
-        jb_kv_bool(&b, "product_matches", matches);
-        jb_kv_bool(&b, "all_prime", all_prime);
-        jb_kv_bool(&b, "valid", valid);
-        jb_obj_end(&b);
-        int rc = jb_flush(&b);
-        jb_free(&b);
-        if (rc != 0)
-            return rc;
+        Json j = {false};
+        json_object_begin(&j);
+        json_string(&j, "command", "verify");
+        json_u64(&j, "n", n);
+        json_string(&j, "status", valid ? "ok" : "reconstruction_failed");
+        json_u64_array(&j, "factors", factors, (int)count);
+        json_u64(&j, "product", overflow ? 0 : product);
+        json_bool(&j, "product_matches", matches);
+        json_bool(&j, "all_prime", all_prime);
+        json_bool(&j, "valid", valid);
+        json_object_end(&j);
+        putchar('\n');
     } else {
         printf("command  : verify\n");
         printf("n        : %" U64_FMT "\n", n);
         printf("factors  :");
-        for (size_t i = 0; i < k; i++)
-            printf(" %" U64_FMT, fs[i]);
+        for (i = 0; i < count; i++)
+            printf(" %" U64_FMT, factors[i]);
         printf("\n");
-        printf("product  : %" U64_FMT "%s\n", overflow ? 0 : prod,
+        printf("product  : %" U64_FMT "%s\n", overflow ? 0 : product,
                overflow ? " (overflow)" : "");
         printf("matches  : %s\n", matches ? "yes" : "no");
         printf("all prime: %s\n", all_prime ? "yes" : "no");
@@ -777,15 +597,17 @@ static double elapsed_ms(const struct timespec *a, const struct timespec *b)
 
 int main(int argc, char **argv)
 {
-    struct timespec t0;
-    clock_gettime(CLOCK_MONOTONIC, &t0);
+    struct timespec start;
+    const char *cmd;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
 
     if (argc < 2) {
         fprintf(stderr, "error: missing command\n\n");
         print_usage(stderr);
         return 2;
     }
-    const char *cmd = argv[1];
+    cmd = argv[1];
 
     if (strcmp(cmd, "help") == 0 || strcmp(cmd, "--help") == 0 ||
         strcmp(cmd, "-h") == 0) {
@@ -795,23 +617,26 @@ int main(int argc, char **argv)
 
     if (strcmp(cmd, "factor") == 0 || strcmp(cmd, "compare") == 0) {
         bool json = json_flag_present(argc, argv);
-        options o;
-        options_init(&o);
+        Options o;
         uint64_t n = 0;
         bool have_n = false;
-        int rc = parse_factor_args(argc, argv, &o, &n, &have_n, cmd, json);
+        int rc;
+
+        options_init(&o);
+        rc = parse_factor_args(argc, argv, &o, &n, &have_n, cmd, json);
         if (rc >= 0)
             return rc;
 
-        rc = (strcmp(cmd, "factor") == 0)
-                 ? (o.algo == ALGO_AUTO ? cmd_factor_auto(n, &o)
-                                        : cmd_factor_single(n, &o))
-                 : cmd_compare(n, &o);
+        if (strcmp(cmd, "factor") == 0)
+            rc = (o.algo == ALGO_AUTO) ? cmd_factor_auto(n, &o)
+                                       : cmd_factor_single(n, &o);
+        else
+            rc = cmd_compare(n, &o);
 
         if (o.show_time && !o.json) {
-            struct timespec t1;
-            clock_gettime(CLOCK_MONOTONIC, &t1);
-            printf("elapsed_ms: %.3f\n", elapsed_ms(&t0, &t1));
+            struct timespec end;
+            clock_gettime(CLOCK_MONOTONIC, &end);
+            printf("elapsed_ms: %.3f\n", elapsed_ms(&start, &end));
         }
         return rc;
     }
@@ -822,22 +647,24 @@ int main(int argc, char **argv)
         size_t count = 0;
         bool have_n = false;
         uint64_t n = 0;
-        for (int i = 2; i < argc; i++) {
-            const char *a = argv[i];
-            if (strcmp(a, "--json") == 0 || strcmp(a, "--time") == 0)
+        int i;
+
+        for (i = 2; i < argc; i++) {
+            uint64_t value;
+            if (strcmp(argv[i], "--json") == 0 ||
+                strcmp(argv[i], "--time") == 0)
                 continue;
-            uint64_t v;
-            if (!parse_u64(a, &v))
+            if (!parse_u64(argv[i], &value))
                 return report_error("argument is not a non-negative integer",
                                     json, "verify");
             if (!have_n) {
-                n = v;
+                n = value;
                 have_n = true;
                 continue;
             }
             if (count >= sizeof(values) / sizeof(values[0]))
                 return report_error("too many factors (max 1024)", json, "verify");
-            values[count++] = v;
+            values[count++] = value;
         }
         if (!have_n)
             return report_error("missing required argument <n>", json, "verify");

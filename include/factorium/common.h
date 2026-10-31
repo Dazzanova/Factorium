@@ -1,62 +1,48 @@
 /*
- * factorium/common.h — shared result types for the Factorium core library.
+ * factorium/common.h — one result code shared by every algorithm.
  *
- * Design rules:
- *  - Math modules return values (or heap-allocated, caller-freed arrays);
- *    they never print, never measure time, and never interpret a failed
- *    factorization attempt as proof of primality.
- *  - "No factor found within budget" (FCT_NO_FACTOR) is a normal outcome of
- *    a probabilistic/limited search, NOT evidence that n is prime. Only
- *    fct_is_prime() (deterministic Miller-Rabin) establishes primality.
+ * The code says both what happened (status) and why the search stopped
+ * (reason). status_string()/reason_string() give the text used by the CLI,
+ * the JSON output and the CSV export.
+ *
+ * Important: "no factor" only means the search ran out of budget. It is
+ * never a proof that n is prime -- is_prime() is the only primality test.
  */
 #ifndef FACTORIUM_COMMON_H
 #define FACTORIUM_COMMON_H
 
 #include <stdbool.h>
-#include <stddef.h>
 #include <stdint.h>
 
-/* Outcome of a factorization operation. */
 typedef enum {
-    FCT_OK = 0,                  /* factor found, or complete factorization */
-    FCT_NO_FACTOR,               /* search exhausted within budget; no factor */
-    FCT_INVALID_INPUT,           /* n out of domain (n < 4 for factor finding,
-                                    n < 2 for factorization) or bad config */
-    FCT_WORK_LIMIT,              /* hard resource cap reached mid-search */
-    FCT_INCOMPLETE,              /* factorization finished but >= 1 cofactor
-                                    could not be resolved within limits */
-    FCT_RECONSTRUCTION_FAILED,   /* product of factors does not equal n */
-    FCT_MEMORY,                  /* allocation failure */
-    FCT_INTERNAL                 /* unexpected internal error (defensive) */
-} fct_status;
+    RESULT_FOUND = 0,    /* a nontrivial factor was found               */
+    RESULT_COMPLETE,     /* full factorization, product verified        */
+    RESULT_NO_FACTOR,    /* budget used up, nothing found               */
+    RESULT_NO_BASE,      /* p-1: every base missed                      */
+    RESULT_INVALID,      /* bad input or bad configuration              */
+    RESULT_INCOMPLETE,   /* factorization stopped with cofactors left   */
+    RESULT_DEPTH_LIMIT,  /* stopped by the recursion depth cap          */
+    RESULT_WORK_LIMIT,   /* hard work cap reached                       */
+    RESULT_FACTOR_LIMIT, /* the factor array is full                    */
+    RESULT_MEMORY,       /* allocation failure                          */
+    RESULT_INTERNAL,     /* defensive: should never happen              */
+    RESULT_BAD_PRODUCT   /* factors do not multiply back to n           */
+} ResultCode;
 
-const char *fct_status_str(fct_status s);
+const char *status_string(ResultCode code);
+const char *reason_string(ResultCode code);
+int exit_code(ResultCode code);
 
-/* Why a search stopped. */
-typedef enum {
-    FCT_TERM_NONE = 0,
-    FCT_TERM_FOUND,              /* nontrivial factor found */
-    FCT_TERM_BUDGET_EXHAUSTED,   /* iteration/retry budget used up */
-    FCT_TERM_BASES_EXHAUSTED,    /* p-1: every base tried gave gcd 1 or n */
-    FCT_TERM_INVALID_INPUT,
-    FCT_TERM_WORK_LIMIT,
-    FCT_TERM_RECURSION_LIMIT,    /* factorization: depth cap */
-    FCT_TERM_FACTOR_LIMIT        /* factorization: factor-count cap */
-} fct_termination;
-
-const char *fct_termination_str(fct_termination t);
-
-/* Result of a single factor-discovery attempt (any algorithm). */
+/* Result of one factor-search attempt (Fermat, Rho or p-1). */
 typedef struct {
-    fct_status status;
-    uint64_t factor;      /* nontrivial factor found (status == FCT_OK)   */
-    uint64_t cofactor;    /* n / factor                                   */
-    uint64_t iterations;  /* main-loop iterations executed                */
-    uint64_t gcd_calls;   /* number of gcd evaluations                    */
-    uint64_t modmul_ops;  /* modular multiplications performed            */
-    uint64_t seed;        /* seed used (Pollard Rho; 0 for others)        */
-    uint64_t c;           /* polynomial constant used (Pollard Rho)       */
-    fct_termination reason;
-} fct_factor_result;
+    ResultCode code;
+    uint64_t factor;     /* the nontrivial factor found                */
+    uint64_t cofactor;   /* n / factor                                 */
+    uint64_t iterations; /* main loop iterations / bases tried         */
+    uint64_t gcd_calls;  /* number of gcd evaluations                  */
+    uint64_t modmul_ops; /* modular multiplications performed         */
+    uint64_t seed;       /* Rho: initial iterate of the winning attempt */
+    uint64_t c;          /* Rho: polynomial constant of that attempt   */
+} FactorResult;
 
 #endif /* FACTORIUM_COMMON_H */

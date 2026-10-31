@@ -8,11 +8,10 @@
 #include "test_harness.h"
 
 /* Asserts the shared invariants of any successful rho result. */
-static void check_valid_split(const fct_factor_result *r, uint64_t n)
+static void check_valid_split(const FactorResult *r, uint64_t n)
 {
-    CHECK(r->status == FCT_OK);
-    CHECK(r->reason == FCT_TERM_FOUND);
-    if (r->status != FCT_OK)
+    CHECK(r->code == RESULT_FOUND);
+    if (r->code != RESULT_FOUND)
         return;
     CHECK(r->factor > 1);
     CHECK(r->factor < n);
@@ -25,16 +24,17 @@ static void check_valid_split(const fct_factor_result *r, uint64_t n)
 
 static void test_invalid_and_even(void)
 {
-    fct_factor_result r;
+    FactorResult r;
     for (uint64_t n = 0; n <= 3; n++) {
-        r = fct_pollard_rho(n, NULL);
-        CHECK(r.status == FCT_INVALID_INPUT);
-        CHECK(r.reason == FCT_TERM_INVALID_INPUT);
+        r = rho(n, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES,
+                RHO_DEFAULT_SEED);
+        CHECK(r.code == RESULT_INVALID);
     }
-    r = fct_pollard_rho(4, NULL);
-    CHECK(r.status == FCT_OK && r.factor == 2 && r.cofactor == 2);
-    r = fct_pollard_rho(18446744073709551614ULL, NULL); /* 2^64 - 2 */
-    CHECK(r.status == FCT_OK);
+    r = rho(4, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES, RHO_DEFAULT_SEED);
+    CHECK(r.code == RESULT_FOUND && r.factor == 2 && r.cofactor == 2);
+    r = rho(18446744073709551614ULL, RHO_DEFAULT_ITERATIONS,
+            RHO_DEFAULT_RETRIES, RHO_DEFAULT_SEED); /* 2^64 - 2 */
+    CHECK(r.code == RESULT_FOUND);
     CHECK_EQ_U64(r.factor, 2);
     CHECK_EQ_U64(r.cofactor, 9223372036854775807ULL);
     CHECK_EQ_U64(r.iterations, 0);
@@ -44,9 +44,9 @@ static void test_invalid_and_even(void)
 
 static void test_small_composites(void)
 {
-    fct_factor_result r;
+    FactorResult r;
     /* n = 15: attempt 0 uses x0 = 2, c = 0; found on the first step. */
-    r = fct_pollard_rho(15, NULL);
+    r = rho(15, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES, RHO_DEFAULT_SEED);
     check_valid_split(&r, 15);
     CHECK(r.factor == 3 || r.factor == 5);
     CHECK_EQ_U64(r.seed, 2);
@@ -56,7 +56,7 @@ static void test_small_composites(void)
     CHECK_EQ_U64(r.modmul_ops, 3);
 
     /* n = 9: x0 = 2, c = 0 -> gcd(3, 9) = 3 (gcd == n never happens). */
-    r = fct_pollard_rho(9, NULL);
+    r = rho(9, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES, RHO_DEFAULT_SEED);
     check_valid_split(&r, 9);
     CHECK_EQ_U64(r.factor, 3);
     CHECK_EQ_U64(r.cofactor, 3);
@@ -65,11 +65,12 @@ static void test_small_composites(void)
     /* Odd sweep: for every result either a valid split is reported or an
      * honest NO_FACTOR (primes land in the latter bucket). */
     for (uint64_t n = 21; n <= 1001; n += 2) {
-        r = fct_pollard_rho(n, NULL);
-        if (r.status == FCT_OK) {
+        r = rho(n, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES,
+                RHO_DEFAULT_SEED);
+        if (r.code == RESULT_FOUND) {
             check_valid_split(&r, n);
         } else {
-            CHECK(r.status == FCT_NO_FACTOR);
+            CHECK(r.code == RESULT_NO_FACTOR);
         }
         if (fh_failures > 0)
             break;
@@ -78,29 +79,32 @@ static void test_small_composites(void)
 
 static void test_large_semiprimes(void)
 {
-    fct_factor_result r;
+    FactorResult r;
     /* Close factors: 1000000007 * 1000000009. */
-    r = fct_pollard_rho(1000000016000000063ULL, NULL);
+    r = rho(1000000016000000063ULL, RHO_DEFAULT_ITERATIONS,
+            RHO_DEFAULT_RETRIES, RHO_DEFAULT_SEED);
     check_valid_split(&r, 1000000016000000063ULL);
     CHECK(r.factor == 1000000007ULL || r.factor == 1000000009ULL);
     /* Distant factors: largest 32-bit prime * 4000000007. */
     uint64_t n64;
-    CHECK(fct_mul_checked(4294967291ULL, 4000000007ULL, &n64));
-    r = fct_pollard_rho(n64, NULL);
+    CHECK(mul_checked(4294967291ULL, 4000000007ULL, &n64));
+    r = rho(n64, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES,
+            RHO_DEFAULT_SEED);
     check_valid_split(&r, n64);
     CHECK(r.factor == 4294967291ULL || r.factor == 4000000007ULL);
     /* Small prime times a 30-bit prime. */
-    r = fct_pollard_rho(3ULL * 998244353ULL, NULL);
+    r = rho(3ULL * 998244353ULL, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES,
+            RHO_DEFAULT_SEED);
     check_valid_split(&r, 3ULL * 998244353ULL);
     CHECK(r.factor == 3 || r.factor == 998244353ULL);
 }
 
 static void test_determinism(void)
 {
-    fct_rho_config c = fct_rho_config_default();
-    c.seed = 42;
-    fct_factor_result a = fct_pollard_rho(1000000016000000063ULL, &c);
-    fct_factor_result b = fct_pollard_rho(1000000016000000063ULL, &c);
+    FactorResult a = rho(1000000016000000063ULL, RHO_DEFAULT_ITERATIONS,
+                         RHO_DEFAULT_RETRIES, 42);
+    FactorResult b = rho(1000000016000000063ULL, RHO_DEFAULT_ITERATIONS,
+                         RHO_DEFAULT_RETRIES, 42);
     check_valid_split(&a, 1000000016000000063ULL);
     CHECK_EQ_U64(a.factor, b.factor);
     CHECK_EQ_U64(a.iterations, b.iterations);
@@ -108,39 +112,29 @@ static void test_determinism(void)
     CHECK_EQ_U64(a.seed, b.seed);
 
     /* A different seed must still produce a valid split. */
-    fct_rho_config c2 = fct_rho_config_default();
-    c2.seed = 7;
-    fct_factor_result d = fct_pollard_rho(1000000016000000063ULL, &c2);
+    FactorResult d = rho(1000000016000000063ULL, RHO_DEFAULT_ITERATIONS,
+                         RHO_DEFAULT_RETRIES, 7);
     check_valid_split(&d, 1000000016000000063ULL);
     /* c values are bounded by the number of retries (c = attempt). */
-    CHECK(a.c < c.max_retries);
+    CHECK(a.c < RHO_DEFAULT_RETRIES);
 }
 
 static void test_budgets_and_prime(void)
 {
-    fct_rho_config c = fct_rho_config_default();
-    c.max_iterations_per_attempt = 10;
-    c.max_retries = 3;
-    fct_factor_result r = fct_pollard_rho(9999999967ULL, &c); /* prime */
-    CHECK(r.status == FCT_NO_FACTOR);
-    CHECK(r.reason == FCT_TERM_BUDGET_EXHAUSTED);
+    FactorResult r = rho(9999999967ULL, 10, 3, RHO_DEFAULT_SEED); /* prime */
+    CHECK(r.code == RESULT_NO_FACTOR);
     /* 10 iterations x 3 retries. */
     CHECK_EQ_U64(r.iterations, 30);
     CHECK_EQ_U64(r.gcd_calls, 30);
     CHECK_EQ_U64(r.modmul_ops, 90);
 
-    c.max_iterations_per_attempt = 0; /* 0 => default */
-    c.max_retries = 1;
-    r = fct_pollard_rho(9999999967ULL, &c);
-    CHECK(r.status == FCT_NO_FACTOR);
-    CHECK(r.iterations <= FCT_RHO_DEFAULT_MAX_ITERATIONS);
+    r = rho(9999999967ULL, RHO_DEFAULT_ITERATIONS, 1, RHO_DEFAULT_SEED);
+    CHECK(r.code == RESULT_NO_FACTOR);
+    CHECK(r.iterations <= RHO_DEFAULT_ITERATIONS);
 
     /* Huge prime with a single tiny attempt: still never "prime". */
-    fct_rho_config tiny = fct_rho_config_default();
-    tiny.max_iterations_per_attempt = 1;
-    tiny.max_retries = 1;
-    r = fct_pollard_rho(18446744073709551557ULL, &tiny);
-    CHECK(r.status == FCT_NO_FACTOR);
+    r = rho(18446744073709551557ULL, 1, 1, RHO_DEFAULT_SEED);
+    CHECK(r.code == RESULT_NO_FACTOR);
     CHECK_EQ_U64(r.iterations, 1);
 }
 
@@ -150,22 +144,18 @@ static void test_prime_square_invariant(void)
      * exhaust retries. Both outcomes are legal; assert only invariants. */
     uint64_t n = 4000000007ULL * 4000000007ULL; /* fits in uint64 */
     CHECK(n / 4000000007ULL == 4000000007ULL);
-    fct_factor_result r = fct_pollard_rho(n, NULL);
-    if (r.status == FCT_OK) {
+    FactorResult r = rho(n, RHO_DEFAULT_ITERATIONS, RHO_DEFAULT_RETRIES,
+                         RHO_DEFAULT_SEED);
+    if (r.code == RESULT_FOUND) {
         check_valid_split(&r, n);
         CHECK_EQ_U64(r.factor, 4000000007ULL);
     } else {
-        CHECK(r.status == FCT_NO_FACTOR);
-        CHECK(r.reason == FCT_TERM_BUDGET_EXHAUSTED);
+        CHECK(r.code == RESULT_NO_FACTOR);
     }
 }
 
 int main(void)
 {
-    fct_rho_config def = fct_rho_config_default();
-    CHECK_EQ_U64(def.max_iterations_per_attempt, FCT_RHO_DEFAULT_MAX_ITERATIONS);
-    CHECK_EQ_U64(def.max_retries, FCT_RHO_DEFAULT_MAX_RETRIES);
-    CHECK_EQ_U64(def.seed, FCT_RHO_DEFAULT_SEED);
     test_invalid_and_even();
     test_small_composites();
     test_large_semiprimes();

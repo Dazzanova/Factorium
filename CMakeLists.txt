@@ -19,6 +19,7 @@ add_library(factorium_core STATIC
   src/pollard_rho.c
   src/pollard_p_minus_one.c
   src/factorization.c
+  src/bench_dataset.c
   src/benchmark.c
 )
 target_include_directories(factorium_core PUBLIC include)

@@ -15,12 +15,12 @@
 static void test_dataset_integrity(void)
 {
     size_t count = 0;
-    const fct_bench_case *cases = fct_bench_get_dataset(false, &count);
+    const BenchCase *cases = get_dataset(false, &count);
     CHECK(cases != NULL);
     CHECK(count >= 20);
 
     for (size_t i = 0; i < count; i++) {
-        const fct_bench_case *c = &cases[i];
+        const BenchCase *c = &cases[i];
         CHECK(strlen(c->id) > 0);
         CHECK(strlen(c->category) > 0);
         CHECK(strlen(c->description) > 0);
@@ -49,7 +49,7 @@ static void test_dataset_integrity(void)
 static void test_smoke_dataset(void)
 {
     size_t smoke_count = 0;
-    const fct_bench_case *smoke = fct_bench_get_dataset(true, &smoke_count);
+    const BenchCase *smoke = get_dataset(true, &smoke_count);
     CHECK(smoke != NULL);
     CHECK(smoke_count > 0 && smoke_count <= 25);
 
@@ -69,7 +69,7 @@ static void test_smoke_dataset(void)
 
 static void test_single_trial_run(void)
 {
-    fct_bench_case tc;
+    BenchCase tc;
     strcpy(tc.id, "test_360");
     strcpy(tc.category, "small_factors");
     tc.n = 360;
@@ -79,12 +79,12 @@ static void test_single_trial_run(void)
     strcpy(tc.description, "test case 360");
     strcpy(tc.hypothesis, "trivial factor");
 
-    fct_bench_params p = fct_bench_params_default(FCT_BENCH_ALGO_FERMAT);
-    fct_bench_record rec = fct_bench_run_trial(42, &tc, FCT_BENCH_ALGO_FERMAT, &p);
+    BenchParams p = default_params(BENCH_ALGO_FERMAT);
+    BenchRecord rec = run_trial(42, &tc, BENCH_ALGO_FERMAT, &p);
 
     CHECK_EQ_U64(rec.trial_id, 42);
     CHECK_EQ_U64(rec.n, 360);
-    CHECK_EQ_U64((uint64_t)rec.status, (uint64_t)FCT_OK);
+    CHECK_EQ_U64((uint64_t)rec.code, (uint64_t)RESULT_FOUND);
     CHECK_EQ_U64(rec.factor_found, 2);
     CHECK_EQ_U64(rec.cofactor_found, 180);
     CHECK(rec.factor_is_valid);
@@ -93,21 +93,21 @@ static void test_single_trial_run(void)
 
 static void test_summary_calculation(void)
 {
-    fct_bench_record recs[5];
+    BenchRecord recs[5];
     memset(recs, 0, sizeof(recs));
 
     for (size_t i = 0; i < 5; i++) {
         strcpy(recs[i].dataset_id, "test_summary");
         strcpy(recs[i].category, "unit_test");
-        recs[i].algo = FCT_BENCH_ALGO_RHO;
+        recs[i].algo = BENCH_ALGO_RHO;
         recs[i].runtime_ns = (i + 1) * 1000; /* 1000, 2000, 3000, 4000, 5000 */
         recs[i].iterations = (i + 1) * 10;
         recs[i].gcd_calls = (i + 1) * 5;
         recs[i].modmul_ops = (i + 1) * 20;
-        recs[i].status = (i < 4) ? FCT_OK : FCT_NO_FACTOR;
+        recs[i].code = (i < 4) ? RESULT_FOUND : RESULT_NO_FACTOR;
     }
 
-    fct_bench_summary sum = fct_bench_calculate_summary(recs, 5);
+    BenchSummary sum = calculate_summary(recs, 5);
 
     CHECK_EQ_U64(sum.num_trials, 5);
     CHECK_EQ_U64(sum.num_success, 4);
@@ -126,7 +126,7 @@ static void test_summary_calculation(void)
 
 static void test_csv_export_and_escaping(void)
 {
-    fct_bench_record rec;
+    BenchRecord rec;
     memset(&rec, 0, sizeof(rec));
     rec.trial_id = 1;
     strcpy(rec.dataset_id, "escape,\"test\"");
@@ -135,9 +135,8 @@ static void test_csv_export_and_escaping(void)
     rec.bit_length = 4;
     rec.ground_truth_p = 3;
     rec.ground_truth_q = 5;
-    rec.algo = FCT_BENCH_ALGO_FERMAT;
-    rec.status = FCT_OK;
-    rec.reason = FCT_TERM_FOUND;
+    rec.algo = BENCH_ALGO_FERMAT;
+    rec.code = RESULT_FOUND;
     rec.factor_found = 3;
     rec.cofactor_found = 5;
     rec.factor_is_valid = true;
@@ -147,7 +146,7 @@ static void test_csv_export_and_escaping(void)
     char buf[1024];
     FILE *mem = fmemopen(buf, sizeof(buf), "w");
     CHECK(mem != NULL);
-    bool ok = fct_bench_export_raw_csv(&rec, 1, mem);
+    bool ok = export_raw_csv(&rec, 1, mem);
     CHECK(ok);
     fclose(mem);
 
@@ -159,12 +158,12 @@ static void test_csv_export_and_escaping(void)
 
 static void test_fast_smoke_suite(void)
 {
-    fct_bench_suite_options opts = fct_bench_suite_options_default(true);
+    BenchOptions opts = default_suite_options(true);
     opts.rho_trials = 1;
     opts.max_iterations = 5000;
     opts.smoothness_bound = 5000;
 
-    fct_bench_suite_result res = fct_bench_run_suite(&opts);
+    BenchSuite res = run_suite(&opts);
     CHECK(res.records != NULL);
     CHECK(res.record_count > 0);
     CHECK(res.summaries != NULL);
@@ -176,7 +175,7 @@ static void test_fast_smoke_suite(void)
         CHECK(res.records[i].trial_id > 0);
     }
 
-    fct_bench_suite_result_free(&res);
+    free_suite(&res);
 }
 
 int main(void)

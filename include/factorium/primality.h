@@ -1,5 +1,5 @@
 /*
- * factorium/primality.h — deterministic primality for the full uint64_t range.
+ * factorium/primality.h — exact primality test for every uint64_t.
  */
 #ifndef FACTORIUM_PRIMALITY_H
 #define FACTORIUM_PRIMALITY_H
@@ -9,14 +9,11 @@
 
 /* Deterministic Miller-Rabin.
  *
- * Witnesses: the first twelve primes {2,3,5,7,11,13,17,19,23,29,31,37}.
- * This set is proven to be deterministic for every n <
- * 318,665,857,834,031,151,167,461, which is far above UINT64_MAX
- * (18,446,744,073,709,551,615), so fct_is_prime is exact for all uint64_t:
- * it never reports a composite as prime and never reports a prime as
- * composite.
- *
- * n < 2 returns false. */
-bool fct_is_prime(uint64_t n);
+ * The witnesses 2, 3, 5, ..., 37 are enough to decide primality for every
+ * n < 318,665,857,834,031,151,167,461, which is larger than 2^64. So this
+ * function is exact over the whole uint64_t range: no composite is ever
+ * called prime and no prime is ever called composite. n < 2 returns false.
+ */
+bool is_prime(uint64_t n);
 
 #endif /* FACTORIUM_PRIMALITY_H */
